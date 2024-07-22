@@ -1,0 +1,13 @@
+{
+  "installed": {
+    "client_id": "363840247290-dd34qqikkl5ol3tml7pqk6g06j8dsfpi.apps.googleusercontent.com",
+    "project_id": "touchup-428707",
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token",
+    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+    "client_secret": "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",
+    "redirect_uris": [
+      "http://localhost"
+    ]
+  }
+}

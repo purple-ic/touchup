@@ -1,0 +1,57 @@
+[package]
+name = "touchup"
+version = "0.1.0"
+edition = "2021"
+authors = ["purple-ic"]
+license = "MIT"
+license-file = "LICENSE"
+homepage = "https://github.com/purple-ic/touchup"
+repository = "https://github.com/purple-ic/touchup"
+description = "A program to quickly edit video clips"
+
+[dependencies]
+# make sure the egui, eframe and egui_extras versions are the same!
+egui = { version = "0.28.1", features = ["persistence", "serde"] }
+eframe = { version = "0.28.1", features = ["persistence", "serde"] }
+egui_extras = { version = "0.28.1", default-features = false, features = ["svg", "serde"] }
+
+ffmpeg-next = { version = "7.0.2" }
+rodio = "0.19.0"
+
+# file dialog library
+rfd = "0.14.1"
+# recycling bin/trash bin/whatever library
+trash = { version = "5.0.0" }
+open = "5.3.0"
+# library that gives us shorthands for OS-specific folders (we specifically use it for fiding the video folder)
+dirs = "5.0.1"
+replace_with = "0.1.7"
+
+# only enabled with the `youtube` feature
+# todo: maybe keep yup_oauth2 and get rid of google-youtube3? google-youtube3 is MASSIVE and we only use a single feature
+#       plus, getting rid of it meant we could possibly be able to track the video's uplaod progress
+google-youtube3 = { version = "5.0.5+20240626", optional = true }
+serde_json = { version = "1.0.120", optional = true }
+tokio = { version = "1.38.1", features = ["rt"], default-features = false, optional = true }
+serde = { version = "1.0.203", features = ["derive"] }
+
+[dependencies.parking_lot]
+# absolutely make sure this matches egui's version of parking_lot (https://github.com/emilk/egui/blob/master/Cargo.toml)
+version = "0.12"
+features = ["send_guard"]
+
+# we want to dev profile to be more optimized than usual since the video decoding is really expensive and gets suuuper slow otherwise
+[profile.dev]
+opt-level = 2
+
+[features]
+default = ["youtube"]
+# enables youtube uploading
+#   if disabled, the upload to youtube button won't appear at all.
+#   depends on the `async` feature
+youtube = ["async", "google-youtube3", "serde_json", "tokio/fs"]
+# enables the async runtime
+#   the async runtime is a single thread separate from the UI thread
+#   so all async tasks run on a single thread. this is fine since
+#   we only use async for uploads
+async = ["tokio"]
