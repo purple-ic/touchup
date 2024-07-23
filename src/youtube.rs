@@ -1,6 +1,7 @@
 #![cfg(feature = "youtube")]
 
 use std::{fs, mem};
+use std::error::Error;
 use std::future::Future;
 use std::io::ErrorKind;
 use std::path::PathBuf;
@@ -11,7 +12,9 @@ use eframe::emath::{Align, Vec2};
 use egui::{Button, Color32, Context, CursorIcon, Id, Image, ImageSource, include_image, Label, Layout, OpenUrl, RichText, Sense, TextBuffer, TextEdit, TextStyle, Ui, Widget};
 use egui::util::IdTypeMap;
 use google_youtube3::api::Scope;
+use google_youtube3::client::GetToken;
 use google_youtube3::client::serde_with::serde_derive::{Deserialize, Serialize};
+use google_youtube3::hyper::{Body, Request};
 use tokio::sync::oneshot;
 
 use crate::{AuthArc, spawn_async, storage, Task, YtHub};
@@ -267,12 +270,37 @@ pub fn yt_token_file() -> PathBuf {
     p
 }
 
-pub fn delete_token_file() {
+// note: for logging out, use yt_log_out
+//      yt_log_out also revokes the token
+pub fn yt_delete_token_file() {
     match fs::remove_file(yt_token_file()) {
         Ok(_) => {}
         Err(e) if e.kind() == ErrorKind::NotFound => {}
         Err(e) => panic!("could not delete youtube token file: {e}"),
     }
+}
+
+pub fn yt_log_out(yt: &YtHub) {
+    // auth is usually cheap to clone (reference counted)
+    let auth = yt.auth.clone();
+    // hyper client is reference-counted
+    let client = yt.client.clone();
+
+    // revoke the access token
+    spawn_async(async move {
+        let token = match auth.get_token(&[Scope::Upload.as_ref()]).await {
+            Ok(Some(token)) => token,
+            Ok(None) => unreachable!("tokens should always be required for the upload scope"),
+            Err(_) => todo!("handle get_token errors")
+        };
+
+        let req = Request::post(format!("https://oauth2.googleapis.com/revoke?token={token}"))
+            .body(Body::empty())
+            .unwrap();
+        client.request(req).await.unwrap_or_else(|_| todo!());
+    });
+
+    yt_delete_token_file();
 }
 
 pub struct YtAuthScreen {

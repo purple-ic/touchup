@@ -150,15 +150,15 @@ impl SelectScreen {
                                  true);
                     // if the user disabled login saving, delete the token cache
                     if let Some(false) = keep_login_delta {
-                        youtube::delete_token_file()
+                        youtube::yt_delete_token_file()
                     }
                     let auth_r = auth.read();
                     if auth_r.youtube.is_some() {
                         if ui.button("Log out of YouTube").clicked() {
                             drop(auth_r);
                             let mut auth_w = auth.write();
-                            auth_w.youtube = None;
-                            youtube::delete_token_file();
+                            let yt = auth_w.youtube.take().unwrap();
+                            youtube::yt_log_out(&yt);
                         }
                     } else {
                         if ui.button("Log in to YouTube").clicked() {
