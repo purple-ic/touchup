@@ -32,18 +32,17 @@ jobs:
           rustup toolchain install stable-x86_64-pc-windows-gnu --force-non-host
         name: Rust setup
       - name: Install packages
-        run: sudo apt-get install yasm gcc-mingw-w64-x86-64
+        run: sudo apt-get install yasm
       - run: |
           FFMPEG_REF=$(cat ffmpeg_ref.txt)
           echo "FFMPEG_REF=$FFMPEG_REF" >> $GITHUB_ENV
         name: Set FFmpeg git ref
       - uses: actions/checkout@v4
-        name: Checkout FFmpeg
+        name: Checkout FFmpeg build script
         with:
-          repository: 'FFmpeg/FFmpeg'
-          path: "ffmpeg_build"
+          repository: 'rdp/ffmpeg-windows-build-helpers'
+          path: "ffmpeg_build_helper"
           fetch-depth: 1
-          ref: ${{ env.FFMPEG_REF }}
       #      - name: Get FFmpeg from cache
       #        id: ffmpeg
       #        uses: actions/cache@v4
@@ -51,16 +50,15 @@ jobs:
       #          path:
       - name: Build FFmpeg
         run: |
-          cd ffmpeg_build/
-          ./configure --disable-debug --enable-stripping --disable-programs --enable-shared --enable-cross-compile --arch=x86_64 --target-os=mingw32 --cross-prefix=x86_64-w64-mingw32 --prefix=${{ github.workspace }}/out_windows
-          make
-          cd ..
+          ./ffmpeg_build_helper/cross_compile_ffmpeg.sh --ffmpeg-git-checkout-version=${{ env.FFMPEG_REF }} --build-ffmpeg-static=n --build-ffmpeg-shared=y --sandbox-ok=y --enable-gpl=n --git-get-latest=n --compiler-flavors=win64
       - name: Build TouchUp
         run: cargo cross build --target x86_64-pc-windows-gnu --release --verbose -F update
       - run:
           mkdir out_windows
+          # wildcard should be fine since there should only be one subdirectory to win64/
+          cp sandbox/win64/*/. out_windows/
           cp target/release/touchup.exe out_windows/
-        name: Copy executable to artifact path
+        name: Prepare artifact directory
       - uses: actions/upload-artifact@v4
         with:
           name: windows
