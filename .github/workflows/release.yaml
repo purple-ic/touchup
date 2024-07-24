@@ -47,13 +47,9 @@ jobs:
         run: |
           cd ffmpeg_build
           ./cross_compile_ffmpeg.sh --ffmpeg-git-checkout-version=${{ env.FFMPEG_REF }} --build-ffmpeg-static=n --build-ffmpeg-shared=y --sandbox-ok=y --enable-gpl=n --git-get-latest=n --compiler-flavors=win64
-      #      - name: Build TouchUp
-      #        run: cargo cross build --target x86_64-pc-windows-gnu --release --verbose -F update
       - run: |
           mkdir out_windows
-        # wildcard should be fine since there should only be one subdirectory to win64/
-               cp ffmpeg_build/sandbox/win64/*/. out_windows/
-        #          cp target/release/touchup.exe out_windows/
+          cp ffmpeg_build/sandbox/win64/*/. out_windows/
         name: Prepare artifact directory
       - uses: actions/upload-artifact@v4
         with:
