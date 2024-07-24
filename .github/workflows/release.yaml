@@ -48,7 +48,7 @@ jobs:
       - name: Build FFmpeg
         run: |
           cd ffmpeg_build/
-          configure --disable-debug --enable-stripping --disable-programs --disable-autodetect --enable-shared --enable-cross-compile --target-os=windows --target-path=$(GITHUB_WORKSPACE)/out_windows
+          ./configure --disable-debug --enable-stripping --disable-programs --disable-autodetect --enable-shared --enable-cross-compile --target-os=windows --target-path=${{ github.workspace }}/out_windows
           make
           cd ..
       - name: Build
