@@ -27,8 +27,10 @@ jobs:
           key: cargo_cache
       - run: |
           cargo install cross
-          rustup toolchain install stable-x86_64-pc-windows-gnu
+          rustup toolchain install stable-x86_64-pc-windows-gnu --force-non-host
         name: Rust setup
+      - name: Install packages
+        run: sudo apt-get install yasm
       - run: |
           FFMPEG_REF=$(cat ffmpeg_ref.txt)
           echo "FFMPEG_REF=$FFMPEG_REF" >> $GITHUB_ENV
@@ -51,11 +53,12 @@ jobs:
           ./configure --disable-debug --enable-stripping --disable-programs --disable-autodetect --enable-shared --enable-cross-compile --target-os=win64 --target-path=${{ github.workspace }}/out_windows
           make
           cd ..
-      - name: Build
+      - name: Build TouchUp
         run: cargo cross build --target x86_64-pc-windows-gnu --release --verbose -F update
       - run:
           mkdir out_windows
           cp target/release/touchup.exe out_windows/
+        name: Copy executable to artifact path
       - uses: actions/upload-artifact@v4
         with:
           name: windows
