@@ -11,47 +11,47 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  build-ffmpeg-windows:
     runs-on: ubuntu-latest
-
+    outputs:
+      ffmpeg_ref: ${{ stepts.set_ref.outputs.ffmpeg_ref }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: cargo_cache-${{ hashFiles('Cargo.lock') }}
-          restore-keys:
-            cargo_cache-
-      #      - run: |
-      #          cargo install cross
-      #          rustup toolchain install stable-x86_64-pc-windows-gnu --force-non-host
-      #        name: Rust setup
-      - name: Install packages
-        run: sudo apt-get install subversion ragel curl texinfo g++ ed bison flex cvs yasm automake libtool autoconf gcc cmake git make pkg-config zlib1g-dev unzip pax nasm gperf autogen bzip2 autoconf-archive p7zip-full meson clang python3-distutils python-is-python3 -y
-      - run: |
+      - name: Set FFmpeg git ref
+        id: set_ref
+        run: |
           FFMPEG_REF=$(cat ffmpeg_ref.txt)
           echo "FFMPEG_REF=$FFMPEG_REF" >> $GITHUB_ENV
-        name: Set FFmpeg git ref
-      - uses: actions/checkout@v4
-        name: Checkout FFmpeg build script
+          echo "ffmpeg_ref=$FFMPEG_REF" >> $GITHUB_OUTPUT
+      - name: Check if FFmpeg artifact already exists
+        uses: xSAVIKx/artifact-exists-action@v0
+        id: artifact_exists
+        with:
+          name: "ffmpeg-${{ env.FFMPEG_REF }}"
+      - name: Install packages
+        if: steps.artifact_exists.outputs.exists != 'true'
+        run: sudo apt-get install subversion ragel curl texinfo g++ ed bison flex cvs yasm automake libtool autoconf gcc cmake git make pkg-config zlib1g-dev unzip pax nasm gperf autogen bzip2 autoconf-archive p7zip-full meson clang python3-distutils python-is-python3 -y
+      - name: Checkout FFmpeg build script
+        uses: actions/checkout@v4
+        if: steps.artifact_exists.outputs.exists != 'true'
         with:
           repository: 'rdp/ffmpeg-windows-build-helpers'
-          path: "ffmpeg_build"
+          path: "."
           fetch-depth: 1
       - name: Build FFmpeg
+        if: steps.artifact_exists.outputs.exists != 'true'
         run: |
           cd ffmpeg_build
           ./cross_compile_ffmpeg.sh --ffmpeg-git-checkout-version=${{ env.FFMPEG_REF }} --build-ffmpeg-static=n --build-ffmpeg-shared=y --sandbox-ok=y --enable-gpl=n --git-get-latest=n --compiler-flavors=win64
-      - run: |
-          mkdir out_windows
-          cp ffmpeg_build/sandbox/win64/*/. out_windows/
-        name: Prepare artifact directory
-      - uses: actions/upload-artifact@v4
+      - name: Copy FFmpeg dlls to artifact directory
+        if: steps.artifact_exists.outputs.exists != 'true'
+        shell: bash
+        run: |
+          for FILE in sandbox/win64/*/*.dll; do
+            cp $FILE artifact/
+          done
+      - name: Upload artifact
+        if: steps.artifact_exists.outputs.exists != 'true'
+        uses: actions/upload-artifact@v4
         with:
-          name: windows
-          path: out_windows/
+          name: "ffmpeg-${{ env.FFMPEG_REF }}"
+          path: artifact/
