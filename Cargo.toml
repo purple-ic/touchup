@@ -27,13 +27,19 @@ open = "5.3.0"
 dirs = "5.0.1"
 replace_with = "0.1.7"
 
-# only enabled with the `youtube` feature
-# todo: maybe keep yup_oauth2 and get rid of google-youtube3? google-youtube3 is MASSIVE and we only use a single feature
-#       plus, getting rid of it meant we could possibly be able to track the video's uplaod progress
-google-youtube3 = { version = "5.0.5+20240626", optional = true }
+# yup_oauth2 is an oauth2 library for google apis
+yup-oauth2 = { version = "11.0.0", optional = true }
+
 serde_json = { version = "1.0.120", optional = true }
 tokio = { version = "1.38.1", features = ["rt"], default-features = false, optional = true }
 serde = { version = "1.0.203", features = ["derive"] }
+
+# `hyper` feature
+hyper = { version = "1.4.1", optional = true }
+hyper-util = { version = "0.1.6", features = ["http2", "http1", "client-legacy"], optional = true }
+rustls = { version = "0.23.12", features = ["ring"], optional = true }
+hyper-rustls = { version = "0.27.2", features = ["http2", "http1", "ring"], optional = true }
+http-body-util = { version = "0.1.2", optional = true }
 
 [dependencies.parking_lot]
 # absolutely make sure this matches egui's version of parking_lot (https://github.com/emilk/egui/blob/master/Cargo.toml)
@@ -45,13 +51,14 @@ features = ["send_guard"]
 opt-level = 2
 
 [features]
+hyper = ["dep:hyper", "dep:hyper-util", "dep:hyper-rustls", "dep:http-body-util", "dep:rustls"]
 default = ["youtube"]
 # enables youtube uploading
 #   if disabled, the upload to youtube button won't appear at all.
 #   depends on the `async` feature
-youtube = ["async", "google-youtube3", "serde_json", "tokio/fs"]
+youtube = ["async", "dep:yup-oauth2", "dep:serde_json", "tokio/fs", "hyper"]
 # enables the async runtime
 #   the async runtime is a single thread separate from the UI thread
 #   so all async tasks run on a single thread. this is fine since
 #   we only use async for uploads
-async = ["tokio"]
+async = ["dep:tokio"]

@@ -18,7 +18,7 @@ use ffmpeg::format::output;
 use ffmpeg::frame::{Audio as AudioFrame, Video as VideoFrame};
 use ffmpeg::sys::AV_TIME_BASE_Q;
 
-use crate::{AuthArc, TaskCommand, TaskStage, TaskStatus};
+use crate::{AuthArc, https_client, TaskCommand, TaskStage, TaskStatus};
 use crate::player::r#impl::sec2ts;
 #[cfg(feature = "async")]
 use crate::spawn_async;
@@ -68,12 +68,11 @@ impl ExportFollowUp {
             ExportFollowUp::Nothing => after_follow_up(ctx),
             #[cfg(feature = "youtube")]
             ExportFollowUp::Youtube { info_recv } => {
-                use google_youtube3::api::{Video, VideoSnippet, VideoStatus};
                 status.send(TaskStatus {
                     stage: TaskStage::YtAwaitingInfo,
                     progress: f32::NEG_INFINITY,
                 }).unwrap();
-                let file = File::open(&output_file).unwrap();
+                let mut file = File::open(&output_file).unwrap();
                 let should_delete = ctx
                     .data_mut(|d| d.get_persisted(Id::new("deleteAfterUpload")))
                     .unwrap_or(true);
@@ -104,35 +103,37 @@ impl ExportFollowUp {
                         progress: f32::INFINITY,
                     }).unwrap();
 
-                    let upload_video =
-                        yt.videos()
-                            .insert(Video {
-                                snippet: Some(VideoSnippet {
-                                    title: Some(title),
-                                    description: Some(description),
-                                    ..VideoSnippet::default()
-                                }),
-                                status: Some(VideoStatus {
-                                    privacy_status: Some(visibility.api_str().to_string()),
-                                    ..VideoStatus::default()
-                                }),
-                                ..Video::default()
-                            })
-                            // adding the upload scope prevents google_youtube3 from requesting full scope access
-                            .add_scope(google_youtube3::api::Scope::Upload)
-                            .upload(
-                                file,
-                                // FileTracker {
-                                //     f: file,
-                                //     position: 0,
-                                //     status: SyncSender::clone(&status),
-                                //     file_len,
-                                // },
-                                "application/octet-stream".parse().unwrap(),
-                            );
+                    let upload_video = crate::youtube::yt_upload(
+                        https_client(), &mut file, yt, &title, &description, visibility,
+                    );
+                    // let upload_video =
+                    //     yt.videos()
+                    //         .insert(Video {
+                    //             snippet: Some(VideoSnippet {
+                    //                 title: Some(title),
+                    //                 description: Some(description),
+                    //                 ..VideoSnippet::default()
+                    //             }),
+                    //             status: Some(VideoStatus {
+                    //                 privacy_status: Some(visibility.api_str().to_string()),
+                    //                 ..VideoStatus::default()
+                    //             }),
+                    //             ..Video::default()
+                    //         })
+                    //         // adding the upload scope prevents google_youtube3 from requesting full scope access
+                    //         .add_scope(google_youtube3::api::Scope::Upload)
+                    //         .upload(
+                    //             file,
+                    //             // FileTracker {
+                    //             //     f: file,
+                    //             //     position: 0,
+                    //             //     status: SyncSender::clone(&status),
+                    //             //     file_len,
+                    //             // },
+                    //             "application/octet-stream".parse().unwrap(),
+                    //         );
                     tokio::select! {
                         v = upload_video => {
-                            v.unwrap();
                             status.send(TaskStatus {
                                 stage: TaskStage::YtUpload,
                                 progress: 1.,

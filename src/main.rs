@@ -32,14 +32,37 @@ mod select;
 mod util;
 mod youtube;
 
-// use crate::player::{Player, VideoInfo};
+#[cfg(feature = "hyper")]
+pub type HttpsConnector = hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>;
 
-#[cfg(feature = "youtube")]
-type YtHub = google_youtube3::YouTube<
-    google_youtube3::hyper_rustls::HttpsConnector<
-        google_youtube3::hyper::client::connect::HttpConnector,
-    >,
+#[cfg(feature = "hyper")]
+pub type HttpsClient = hyper_util::client::legacy::Client<
+    HttpsConnector,
+    http_body_util::Full<std::io::Cursor<Vec<u8>>>
 >;
+
+#[cfg(feature = "hyper")]
+pub fn https_client() -> &'static HttpsClient {
+    static CLIENT: OnceLock<HttpsClient> = OnceLock::new();
+
+    CLIENT.get_or_init(|| {
+        use hyper_util::client::legacy::Client;
+        use hyper_util::rt::TokioExecutor;
+
+        let https = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .unwrap()
+            .https_only()
+            .enable_http1()
+            .build();
+
+        let client = Client::builder(TokioExecutor::new())
+            .http2_only(false)
+            .build(https);
+
+        client
+    })
+}
 
 #[derive(Default)]
 #[cfg(any(
@@ -48,7 +71,7 @@ type YtHub = google_youtube3::YouTube<
 pub struct Auth {
     pub ctx: Context,
     #[cfg(feature = "youtube")]
-    pub youtube: Option<YtHub>,
+    pub youtube: Option<youtube::YtAuth>,
 }
 
 #[cfg(any(
@@ -99,6 +122,11 @@ where
 fn main() {
     // todo: remove this line
     storage();
+
+    #[cfg(feature = "hyper")]
+    {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
 
     #[cfg(feature = "async")]
     let barrier = Arc::new(Barrier::new(2));
