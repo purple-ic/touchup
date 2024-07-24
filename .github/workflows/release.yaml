@@ -49,7 +49,7 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          for FILE in sandbox/win64/*/ffmpeg_git/*.dll; do
+          for FILE in sandbox/win64/*/ffmpeg_git_lgpl*/*.dll; do
             cp $FILE out/
           done
       - name: Upload artifact
