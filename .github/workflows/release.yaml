@@ -32,7 +32,7 @@ jobs:
           rustup toolchain install stable-x86_64-pc-windows-gnu --force-non-host
         name: Rust setup
       - name: Install packages
-        run: sudo apt-get install yasm mingw-w64-dev
+        run: sudo apt-get install yasm gcc-mingw-w64-x86-64
       - run: |
           FFMPEG_REF=$(cat ffmpeg_ref.txt)
           echo "FFMPEG_REF=$FFMPEG_REF" >> $GITHUB_ENV
@@ -52,7 +52,7 @@ jobs:
       - name: Build FFmpeg
         run: |
           cd ffmpeg_build/
-          ./configure --disable-debug --enable-stripping --disable-programs --enable-shared --enable-cross-compile --arch=x86_64 --target-os=mingw32 --cross-prefix=x86_64-w64-mingw32 --target-path=${{ github.workspace }}/out_windows
+          ./configure --disable-debug --enable-stripping --disable-programs --enable-shared --enable-cross-compile --arch=x86_64 --target-os=mingw32 --cross-prefix=x86_64-w64-mingw32 --prefix=${{ github.workspace }}/out_windows
           make
           cd ..
       - name: Build TouchUp
