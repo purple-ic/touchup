@@ -14,7 +14,7 @@ jobs:
   build-ffmpeg-windows:
     runs-on: ubuntu-latest
     outputs:
-      ffmpeg_ref: ${{ stepts.set_ref.outputs.ffmpeg_ref }}
+      ffmpeg_ref: ${{ septs.set_ref.outputs.ffmpeg_ref }}
     steps:
       - name: Set FFmpeg git ref
         id: set_ref
