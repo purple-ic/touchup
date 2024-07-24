@@ -16,10 +16,13 @@ jobs:
     outputs:
       ffmpeg_ref: ${{ steps.set_ref.outputs.ffmpeg_ref }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          path: "./touchup/"
       - name: Set FFmpeg git ref
         id: set_ref
         run: |
-          FFMPEG_REF=$(cat ffmpeg_ref.txt)
+          FFMPEG_REF=$(cat ./touchup/ffmpeg_ref.txt)
           echo "FFMPEG_REF=$FFMPEG_REF" >> $GITHUB_ENV
           echo "ffmpeg_ref=$FFMPEG_REF" >> $GITHUB_OUTPUT
       - name: Check if FFmpeg artifact already exists
