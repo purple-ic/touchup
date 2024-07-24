@@ -1,0 +1,60 @@
+name: Rust
+
+on:
+  release:
+    types: [ published ]
+  push:
+    branches:
+      - workflow_test
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: cargo_cache
+      - run: |
+          cargo install cross
+          rustup toolchain install stable-x86_64-pc-windows-gnu
+        name: Rust setup
+      - run: |
+          FFMPEG_REF=$(cat ffmpeg_ref.txt)
+          echo "FFMPEG_REF=$FFMPEG_REF" >> $GITHUB_ENV
+        name: Set FFmpeg git ref
+      - uses: actions/checkout@v4
+        name: Checkout FFmpeg
+        with:
+          repository: 'FFmpeg/FFmpeg'
+          path: "ffmpeg_build"
+          fetch-depth: 1
+          ref: ${{ env.FFMPEG_REF }}
+      #      - name: Get FFmpeg from cache
+      #        id: ffmpeg
+      #        uses: actions/cache@v4
+      #        with:
+      #          path:
+      - name: Build FFmpeg
+        run: |
+          configure --disable-debug --enable-stripping --disable-programs --disable-autodetect --enable-shared --enable-cross-compile --target-os=windows --target-path=$(GITHUB_WORKSPACE)/out_windows
+          make
+      - name: Build
+        run: cargo cross build --target x86_64-pc-windows-gnu --release --verbose -F update
+      - run:
+          mkdir out_windows
+          cp target/release/touchup.exe out_windows/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: out_windows/

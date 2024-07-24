@@ -31,6 +31,9 @@ pub mod player;
 mod select;
 mod util;
 mod youtube;
+mod updater;
+
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg(feature = "hyper")]
 pub type HttpsConnector = hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>;
@@ -120,6 +123,8 @@ where
 }
 
 fn main() {
+    println!("TouchUp version {VERSION}");
+
     // todo: remove this line
     storage();
 
@@ -157,13 +162,15 @@ fn main() {
             println!("async shutting down")
         });
     }
+    ffmpeg::init().expect("could not initialize ffmpeg");
     #[cfg(feature = "async")]
     {
         barrier.wait();
         drop(barrier);
     }
 
-    ffmpeg::init().expect("could not initialize ffmpeg");
+    #[cfg(feature = "update")]
+    spawn_async(updater::check_updates());
 
     eframe::run_native(
         "TouchUp",
