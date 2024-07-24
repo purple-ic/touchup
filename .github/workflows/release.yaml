@@ -47,8 +47,10 @@ jobs:
       #          path:
       - name: Build FFmpeg
         run: |
+          cd ffmpeg_build/
           configure --disable-debug --enable-stripping --disable-programs --disable-autodetect --enable-shared --enable-cross-compile --target-os=windows --target-path=$(GITHUB_WORKSPACE)/out_windows
           make
+          cd ..
       - name: Build
         run: cargo cross build --target x86_64-pc-windows-gnu --release --verbose -F update
       - run:
