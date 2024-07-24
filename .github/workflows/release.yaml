@@ -43,11 +43,6 @@ jobs:
           repository: 'rdp/ffmpeg-windows-build-helpers'
           path: "ffmpeg_build_helper"
           fetch-depth: 1
-      #      - name: Get FFmpeg from cache
-      #        id: ffmpeg
-      #        uses: actions/cache@v4
-      #        with:
-      #          path:
       - name: Build FFmpeg
         run: ./ffmpeg_build_helper/cross_compile_ffmpeg.sh --ffmpeg-git-checkout-version=${{ env.FFMPEG_REF }} --build-ffmpeg-static=n --build-ffmpeg-shared=y --sandbox-ok=y --enable-gpl=n --git-get-latest=n --compiler-flavors=win64
       - name: Build TouchUp
