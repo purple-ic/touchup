@@ -25,36 +25,36 @@ jobs:
           FFMPEG_REF=$(cat ./touchup/ffmpeg_ref.txt)
           echo "FFMPEG_REF=$FFMPEG_REF" >> $GITHUB_ENV
           echo "ffmpeg_ref=$FFMPEG_REF" >> $GITHUB_OUTPUT
-      - name: Check if FFmpeg artifact already exists
-        uses: xSAVIKx/artifact-exists-action@v0
-        id: artifact_exists
+      - name: Get FFmpeg from cache
+        id: cache
+        uses: actions/cache@v4
         with:
-          name: "ffmpeg-${{ env.FFMPEG_REF }}"
+          key: "ffmpeg-${{ env.FFMPEG_REF }}"
+          path: out/
       - name: Install packages
-        if: steps.artifact_exists.outputs.exists != 'true'
+        if: steps.cache.outputs.cache-hit != 'true'
         run: sudo apt-get install subversion ragel curl texinfo g++ ed bison flex cvs yasm automake libtool autoconf gcc cmake git make pkg-config zlib1g-dev unzip pax nasm gperf autogen bzip2 autoconf-archive p7zip-full meson clang python3-distutils python-is-python3 -y
       - name: Checkout FFmpeg build script
         uses: actions/checkout@v4
-        if: steps.artifact_exists.outputs.exists != 'true'
+        if: steps.cache.outputs.cache-hit != 'true'
         with:
           repository: 'rdp/ffmpeg-windows-build-helpers'
           path: "."
           fetch-depth: 1
       - name: Build FFmpeg
-        if: steps.artifact_exists.outputs.exists != 'true'
+        if: steps.cache.outputs.cache-hit != 'true'
         run: |
-          cd ffmpeg_build
           ./cross_compile_ffmpeg.sh --ffmpeg-git-checkout-version=${{ env.FFMPEG_REF }} --build-ffmpeg-static=n --build-ffmpeg-shared=y --sandbox-ok=y --enable-gpl=n --git-get-latest=n --compiler-flavors=win64
       - name: Copy FFmpeg dlls to artifact directory
-        if: steps.artifact_exists.outputs.exists != 'true'
+        if: steps.cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           for FILE in sandbox/win64/*/*.dll; do
-            cp $FILE artifact/
+            cp $FILE out/
           done
       - name: Upload artifact
-        if: steps.artifact_exists.outputs.exists != 'true'
+        if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: "ffmpeg-${{ env.FFMPEG_REF }}"
-          path: artifact/
+          path: out/
