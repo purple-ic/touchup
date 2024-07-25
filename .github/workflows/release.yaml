@@ -53,8 +53,9 @@ jobs:
           mkdir out/
           
           for FILE in sandbox/win64/ffmpeg_git_lgpl*/bin/{avcodec,avdevice,avformat,avutil,swresample,swscale}*.dll; do
-            cp -a "$FILE" out/
+            cp "$FILE" out/
           done
+          cp sandbox/win64/ffmpeg_git_lgpl*/COPYING.LGPLv2.1 out/LICENSE
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
