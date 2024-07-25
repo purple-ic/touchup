@@ -144,7 +144,7 @@ fn copy_dir_all<'a>(mut dir: fs::ReadDir, exe_path: &PathBuf, in_path: &'a mut P
                 continue;
             }
             in_path.push(name);
-            fs::copy(in_path, out_path).unwrap();
+            fs::copy(&in_path, &out_path).unwrap();
             in_path.pop();
             out_path.pop();
         } else if ty.is_dir() {
