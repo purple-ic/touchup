@@ -22,7 +22,7 @@ jobs:
           - type: mini
             features: "--no-default-features"
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: actions/cache@v3
         with:
           path: |
@@ -94,5 +94,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: "ffmpeg-${{ env.FFMPEG_REF }}"
+          name: "ffmpeg-win64-${{ env.FFMPEG_REF }}"
           path: out/
