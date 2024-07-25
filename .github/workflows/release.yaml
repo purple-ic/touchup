@@ -11,6 +11,40 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  build-linux-release:
+    runs-on: ubuntu-latest
+    name: Build
+    strategy:
+      matrix:
+        type: [ default, mini ]
+        include:
+          - type: mini
+            features: "--no-default-features"
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-release-${{ matrix.type }}-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install linux packages
+        run: |
+          echo "---- FFmpeg dependencies"
+          sudo apt-get install -y clang libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev pkg-config
+          echo "---- Rodio dependencies"
+          sudo apt-get install -y libasound2-dev
+      - name: Build
+        run: cargo build --release ${{ matrix.features }}
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: "touchup-linux"
+          path: target/release/touchup
+
   build-ffmpeg-windows:
     name: Build FFmpeg for Windows
     runs-on: ubuntu-latest

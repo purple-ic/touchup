@@ -31,10 +31,6 @@ jobs:
             ~/.cargo/git/db/
             target/
           key: ${{ runner.os }}-cargo-${{ matrix.enable-yt }}-${{ matrix.enable-upd }}-${{ hashFiles('**/Cargo.lock') }}
-      - name: Set FFmpeg git version
-        run: |
-          FFMPEG_VER=$(cat ./ffmpeg_ver.txt)
-          echo "FFMPEG_VER=$FFMPEG_VER" >> $GITHUB_ENV
       - name: Install linux packages
         run: |
           echo "---- FFmpeg dependencies"
