@@ -13,8 +13,9 @@ env:
 jobs:
   build-linux-release:
     runs-on: ubuntu-latest
-    name: Build
+    name: Linux build
     strategy:
+      fail-fast: false
       matrix:
         type: [ default, mini ]
         include:
@@ -42,7 +43,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: "touchup-linux"
+          name: touchup-linux-${{ matrix.type }}
           path: target/release/touchup
 
   build-ffmpeg-windows:
