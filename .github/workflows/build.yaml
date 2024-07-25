@@ -30,10 +30,9 @@ jobs:
             ~/.cargo/git/db/
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
       - name: Set FFmpeg git version
         run: |
-          FFMPEG_VER=$(cat ./touchup/ffmpeg_ver.txt)
+          FFMPEG_VER=$(cat ./ffmpeg_ver.txt)
           echo "FFMPEG_VER=$FFMPEG_VER" >> $GITHUB_ENV
       - name: Install packages for FFmpeg
         run: apt install -y clang libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev pkg-config
