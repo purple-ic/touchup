@@ -15,7 +15,7 @@ egui = { version = "0.28.1", features = ["persistence", "serde"] }
 eframe = { version = "0.28.1", features = ["persistence", "serde"] }
 egui_extras = { version = "0.28.1", default-features = false, features = ["svg", "serde"] }
 
-ffmpeg-next = { version = "7.0.2" }
+ffmpeg-next = { version = "7.0.2", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
 rodio = "0.19.0"
 futures-util = { version = "0.3.30", optional = true }
 

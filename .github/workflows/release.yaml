@@ -12,6 +12,7 @@ env:
 
 jobs:
   build-ffmpeg-windows:
+    name: Build FFmpeg for Windows
     runs-on: ubuntu-latest
     outputs:
       ffmpeg_ref: ${{ steps.set_ref.outputs.ffmpeg_ref }}
@@ -22,7 +23,7 @@ jobs:
       - name: Set FFmpeg git ref
         id: set_ref
         run: |
-          FFMPEG_REF=$(cat ./touchup/ffmpeg_ref.txt)
+          FFMPEG_REF=n$(cat ./touchup/ffmpeg_ver.txt)
           echo "FFMPEG_REF=$FFMPEG_REF" >> $GITHUB_ENV
           echo "ffmpeg_ref=$FFMPEG_REF" >> $GITHUB_OUTPUT
       - name: Get FFmpeg from cache
