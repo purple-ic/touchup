@@ -45,13 +45,6 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           ./cross_compile_ffmpeg.sh --ffmpeg-git-checkout-version=${{ env.FFMPEG_REF }} --build-ffmpeg-static=n --build-ffmpeg-shared=y --sandbox-ok=y --enable-gpl=n --git-get-latest=n --compiler-flavors=win64
-      - run: |
-          mkdir out_all/
-          cp -a sandbox/win64/ out_all/
-      - uses: actions/upload-artifact@v4
-        with:
-          name: "ffmpeg-${{ env.FFMPEG_REF }}-all"
-          path: out_all/
       - name: Copy FFmpeg dlls to artifact directory
         if: steps.cache.outputs.cache-hit != 'true'
         shell: bash
