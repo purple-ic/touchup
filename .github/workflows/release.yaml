@@ -84,6 +84,9 @@ jobs:
           done
           cp -r sandbox/win64/ffmpeg_git_lgpl*/bin/include out/bin/include 
           cp sandbox/win64/ffmpeg_git_lgpl*/COPYING.LGPLv2.1 out/LICENSE
+      - name: FIX THIS LATER -- FIX INCLUDE BEING IN THE WRONG PLACE
+        run:
+          mv out/bin/include out/include
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -118,13 +121,11 @@ jobs:
           path: ./ffmpeg/
         # absolutely stolen from ffmpeg-next: https://github.com/zmwangx/rust-ffmpeg/blob/1922ed055f96c368628e5b543ec4c59ddfa01ff4/.github/workflows/build.yml#L81-L90
       - name: Install dependencies
-        #          todo: fix the build-ffmpeg-windows job moving `include` to the wrong place instead of moving it in this job
         run: |
           $VCINSTALLDIR = $(& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath)
           Add-Content $env:GITHUB_ENV "LIBCLANG_PATH=${VCINSTALLDIR}\VC\Tools\LLVM\x64\bin`n"
           Add-Content $env:GITHUB_ENV "FFMPEG_DIR=${pwd}\ffmpeg`n"
           Add-Content $env:GITHUB_PATH "${pwd}\ffmpeg\bin`n"
-          move /y .\ffmpeg\bin\include .\ffmpeg\include
       - name: Build
         run: cargo build --release ${{ matrix.features }}
       - name: Prepare artifact
