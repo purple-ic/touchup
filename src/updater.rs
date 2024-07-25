@@ -19,7 +19,8 @@ use crate::https_client;
 
 // todo: deal with issues with the fs running out of space
 // todo: display update progress to user
-// todo: linux
+// todo: different update processes for different OSs
+//          e.g. for linux we probably only want to replace the executable since for linux we depend on global packages instead of local dlls like in windows
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -27,15 +28,21 @@ struct UpdateInfo<'a> {
     version: [u32; 3],
     #[cfg(target_os = "windows")]
     windows_artifact: &'a str,
+    #[cfg(target_os = "linux")]
+    linux_artifact: &'a str,
 }
 
 impl<'a> UpdateInfo<'a> {
-    fn artifact(&self) -> &'a str {
+    fn artifact_for_current_os(&self) -> &'a str {
         #[cfg(target_os = "windows")]
         {
             self.windows_artifact
         }
-        #[cfg(not(any(target_os = "windows")))]
+        #[cfg(target_os = "linux")]
+        {
+            self.linux_artifact
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
         compile_error!("automatic updates are not supported on this platform")
     }
 }
@@ -64,7 +71,7 @@ pub async fn check_updates() -> Option<Uri> {
         Some(
             Uri::from_str(&format!(
                 "https://api.github.com/repos/purple-ic/touchup/actions/artifacts/{}/zip",
-                update.artifact()
+                update.artifact_for_current_os()
             ))
                 .unwrap(),
         )
