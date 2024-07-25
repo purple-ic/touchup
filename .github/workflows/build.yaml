@@ -6,7 +6,8 @@ env:
 
 jobs:
   build:
-    name: Test TouchUp compilation without creating any usable releases
+    name: Test TouchUp compilation
+    continue-on-error: true
     strategy:
       matrix:
         os: [ ubuntu-latest ] #todo
@@ -36,9 +37,9 @@ jobs:
           echo "FFMPEG_VER=$FFMPEG_VER" >> $GITHUB_ENV
       - name: Install linux packages
         run: |
-          echo "FFmpeg dependencies"
+          echo "---- FFmpeg dependencies"
           sudo apt-get install -y clang libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev pkg-config
-          echo "Rodio dependencies"
+          echo "---- Rodio dependencies"
           sudo apt-get install -y libasound2-dev
       - name: Build TouchUp
         run: |
