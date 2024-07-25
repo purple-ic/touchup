@@ -50,11 +50,10 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          shopt -s globstar
           mkdir out/
           
-          for DIR in sandbox/win64/ffmpeg_git_lgpl*/**/*.dll; do
-            cp -a "$DIR" out/
+          for FILE in sandbox/win64/ffmpeg_git_lgpl*/bin/{avcodec,avdevice,avformat,avutil,swresample,swscale}*.dll; do
+            cp -a "$FILE" out/
           done
       - name: Upload artifact
         uses: actions/upload-artifact@v4
