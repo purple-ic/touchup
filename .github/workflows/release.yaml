@@ -138,7 +138,9 @@ jobs:
       - name: Build
         run: cargo build --release ${{ matrix.features }}
       - name: Prepare artifact
+        shell: bash
         run: |
+          mkdir artifact
           cp ./target/release/touchup.exe artifact/
           "${{ matrix.type }}" >> artifact/.type
       - name: Upload artifact
