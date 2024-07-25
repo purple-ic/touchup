@@ -39,41 +39,6 @@ jobs:
             artifacts/touchup-linux-*/*
             ./touchup-win-*.zip
 
-  build-linux-release:
-    runs-on: ubuntu-latest
-    name: Linux build
-    strategy:
-      fail-fast: false
-      matrix:
-        type: [ default ] #, mini ]
-    #        include:
-    #          - type: mini
-    #            features: "--no-default-features"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-release-${{ matrix.type }}-${{ hashFiles('**/Cargo.lock') }}
-      - name: Install linux packages
-        run: |
-          echo "---- FFmpeg dependencies"
-          sudo apt-get install -y clang libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev pkg-config
-          echo "---- Rodio dependencies"
-          sudo apt-get install -y libasound2-dev
-      - name: Build
-        run: cargo build --release ${{ matrix.features }}
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: touchup-linux-${{ matrix.type }}
-          path: target/release/touchup
-
   build-ffmpeg-windows:
     name: Build FFmpeg for Windows
     runs-on: ubuntu-latest
@@ -158,6 +123,7 @@ jobs:
           Add-Content $env:GITHUB_ENV "LIBCLANG_PATH=${VCINSTALLDIR}\VC\Tools\LLVM\x64\bin`n"
           Add-Content $env:GITHUB_ENV "FFMPEG_DIR=${pwd}\ffmpeg`n"
           Add-Content $env:GITHUB_PATH "${pwd}\ffmpeg\bin`n"
+          move /y ./ffmpeg/bin/include ./ffmpeg/include
       - name: Build
         run: cargo build --release ${{ matrix.features }}
       - name: Prepare artifact
@@ -169,3 +135,38 @@ jobs:
         with:
           name: touchup-win-standalone-${{ matrix.type }}
           path: artifact/
+
+  build-linux-release:
+    runs-on: ubuntu-latest
+    name: Linux build
+    strategy:
+      fail-fast: false
+      matrix:
+        type: [ default ] #, mini ]
+    #        include:
+    #          - type: mini
+    #            features: "--no-default-features"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-release-${{ matrix.type }}-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install linux packages
+        run: |
+          echo "---- FFmpeg dependencies"
+          sudo apt-get install -y clang libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev pkg-config
+          echo "---- Rodio dependencies"
+          sudo apt-get install -y libasound2-dev
+      - name: Build
+        run: cargo build --release ${{ matrix.features }}
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: touchup-linux-${{ matrix.type }}
+          path: target/release/touchup
