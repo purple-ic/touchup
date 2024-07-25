@@ -28,7 +28,7 @@ jobs:
           for DIR in artifacts/touchup-win-standalone-*/; do
             type=$(cat $DIR/.type)
 
-            cp ffmpeg-win-*/*.dll $DIR
+            cp ffmpeg-win-*/bin/* $DIR/bin
             cp ffmpeg-win-*/LICENSE $DIR/FFMPEG_LICENSE
             zip -r ./touchup-win-$type.zip $DIR 
           done
@@ -112,10 +112,12 @@ jobs:
         shell: bash
         run: |
           mkdir out/
+          mkdir out/bin/
           
           for FILE in sandbox/win64/ffmpeg_git_lgpl*/bin/{avcodec,avdevice,avformat,avutil,swresample,swscale}*.dll; do
-            cp "$FILE" out/
+            cp "$FILE" out/bin/
           done
+          cp -r sandbox/win64/ffmpeg_git_lgpl*/bin/include out/bin/include 
           cp sandbox/win64/ffmpeg_git_lgpl*/COPYING.LGPLv2.1 out/LICENSE
       - name: Upload artifact
         uses: actions/upload-artifact@v4
