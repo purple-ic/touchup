@@ -10,12 +10,12 @@ jobs:
     strategy:
       matrix:
         os: [ ubuntu-latest ] #todo
-        enable-yt: [ true, false ]
-        enable-upd: [ true, false ]
+        enable-yt: [ enable-yt, disable-yt ]
+        enable-upd: [ enable-upd, disable-upd ]
         include:
-          - enable-yt: true
+          - enable-yt: enable-yt
             yt: "-F youtube"
-          - enable-upd: true
+          - enable-upd: enable-upd
             upd: "-F update"
     runs-on: ${{ matrix.os }}
 
@@ -35,7 +35,7 @@ jobs:
           FFMPEG_VER=$(cat ./ffmpeg_ver.txt)
           echo "FFMPEG_VER=$FFMPEG_VER" >> $GITHUB_ENV
       - name: Install packages for FFmpeg
-        run: apt install -y clang libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev pkg-config
+        run: sudo apt-get install -y clang libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev pkg-config
       - name: Build TouchUp
         run: |
           cargo build --no-default-features ${{ matrix.enable-yt }} ${{ matrix.enable-upd }}
