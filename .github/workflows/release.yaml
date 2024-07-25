@@ -13,6 +13,32 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  create-release:
+    name: Create release
+    runs-on: ubuntu-latest
+    needs: [ build-windows-release, build-linux-release ]
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: false
+          path: ./artifacts/
+      - name: Set up Windows release files
+        run: |
+          for DIR in artifacts/touchup-win-standalone-*/; do
+            type=$(cat $DIR/.type)
+
+            cp ffmpeg-win-*/*.dll $DIR
+            cp ffmpeg-win-*/LICENSE $DIR/FFMPEG_LICENSE
+            zip -r ./touchup-win-$type.zip $DIR 
+          done
+      - name: Create & upload release
+        uses: softprops/action-gh-release@v2
+        with:
+          files:
+            artifacts/touchup-linux-*/*
+            ./touchup-win-*.zip
+
   build-linux-release:
     runs-on: ubuntu-latest
     name: Linux build
@@ -141,28 +167,3 @@ jobs:
         with:
           name: touchup-win-standalone-${{ matrix.type }}
           path: artifact/
-  create-release:
-    name: Create release
-    runs-on: ubuntu-latest
-    needs: [ build-windows-release, build-linux-release ]
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          merge-multiple: false
-          path: ./artifacts/
-      - name: Set up Windows release files
-        run: |
-          for DIR in artifacts/touchup-win-standalone-*/; do
-            type=$(cat $DIR/.type)
-          
-            cp ffmpeg-win-*/*.dll $DIR
-            cp ffmpeg-win-*/LICENSE $DIR/FFMPEG_LICENSE
-            zip -r ./touchup-win-$type.zip $DIR 
-          done
-      - name: Create & upload release
-        uses: softprops/action-gh-release@v2
-        with:
-          files:
-            artifacts/touchup-linux-*/*
-            ./touchup-win-*.zip
