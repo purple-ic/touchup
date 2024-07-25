@@ -49,12 +49,12 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: "ffmpeg-${{ env.FFMPEG_REF }}-all"
-          path: sandbox/win64/
+          path: ./sandbox/win64/ffmpeg_git_lgpl_n7.0.1_shared/
       - name: Copy FFmpeg dlls to artifact directory
         if: steps.cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          for DIR in sandbox/win64/*/ffmpeg_git_lgpl*; do
+          for DIR in sandbox/win64/ffmpeg_git_lgpl*; do
             cp -a "$DIR" out/
           done
       - name: Upload artifact
