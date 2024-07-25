@@ -22,21 +22,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
-      # for enable-yt+enable-upd, we both restore AND save the cache
-      # but for any other options, we only restore
-      # todo: make this cleaner plssss
-      - uses: actions/cache/restore@v3
-        if: ${{ matrix.enable-yt != 'enable-yt' || matrix.enable-upd != 'enable-upd' }}
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - uses: actions/cache@v3
-        if: ${{ matrix.enable-yt == 'enable-yt' && matrix.enable-upd == 'enable-upd' }}
         with:
           path: |
             ~/.cargo/bin/
@@ -44,7 +30,7 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ matrix.enable-yt }}-${{ matrix.enable-upd }}-${{ hashFiles('**/Cargo.lock') }}
       - name: Set FFmpeg git version
         run: |
           FFMPEG_VER=$(cat ./ffmpeg_ver.txt)

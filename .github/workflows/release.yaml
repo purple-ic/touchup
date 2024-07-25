@@ -51,6 +51,8 @@ jobs:
         shell: bash
         run: |
           shopt -s globstar
+          mkdir out/
+          
           for DIR in sandbox/win64/ffmpeg_git_lgpl*/**/*.dll; do
             cp -a "$DIR" out/
           done
