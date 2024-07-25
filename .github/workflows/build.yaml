@@ -34,8 +34,12 @@ jobs:
         run: |
           FFMPEG_VER=$(cat ./ffmpeg_ver.txt)
           echo "FFMPEG_VER=$FFMPEG_VER" >> $GITHUB_ENV
-      - name: Install packages for FFmpeg
-        run: sudo apt-get install -y clang libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev pkg-config
+      - name: Install linux packages
+        run: |
+          echo "FFmpeg dependencies"
+          sudo apt-get install -y clang libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev pkg-config
+          echo "Rodio dependencies"
+          sudo apt-get install -y libasound2-dev
       - name: Build TouchUp
         run: |
           cargo build --no-default-features ${{ matrix.yt }} ${{ matrix.upd }}
