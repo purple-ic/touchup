@@ -79,14 +79,20 @@ jobs:
           mkdir out/
           mkdir out/bin/
           
+          # copy dll files
           for FILE in sandbox/win64/ffmpeg_git_lgpl*/bin/{avcodec,avdevice,avformat,avutil,swresample,swscale}*.dll; do
             cp "$FILE" out/bin/
           done
-          cp -r sandbox/win64/ffmpeg_git_lgpl*/bin/include out/bin/include 
+          # copy include headers
+          cp -r sandbox/win64/ffmpeg_git_lgpl*/bin/include out/include
+          # copy license
           cp sandbox/win64/ffmpeg_git_lgpl*/COPYING.LGPLv2.1 out/LICENSE
-      - name: FIX THIS LATER -- FIX INCLUDE BEING IN THE WRONG PLACE
-        run:
-          mv out/bin/include out/include
+          # copy lib
+          cp -r sandbox/win64/ffmpeg_git_lgpl*/lib out/lib
+          # copy bin/*.lib files to lib dir
+          for FILE in sandbox/win64/ffmpeg_git_lgpl*/bin/*.lib; do
+            cp "$FILE" out/lib/
+          done
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
