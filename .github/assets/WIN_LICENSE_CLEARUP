@@ -1,0 +1,16 @@
+Parts of TouchUp are distributed under different licenses.
+
+touchup.exe combines the compiled output of hundreds of Rust crates. While our
+own code is under the MIT license, parts of the executable use the licenses
+available in LICENSES.html
+LICENSES.html also contains attributions to all used crates.
+
+FFmpeg libraries are under the LGPLv2.1, available in the LICENSE_FFmpeg file.
+This includes the following files (library versions are replaced with *):
+- avcodec-*.dll
+- avdevice-*.dll
+- avformat-*.dll
+- avutil-*.dll
+- swresample-*.dll
+- swscale-*.dll
+The FFmpeg libraries included with this distribution was compiled from https://github.com/FFmpeg/FFmpeg/tree/n%s

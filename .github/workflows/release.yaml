@@ -1,0 +1,214 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  create-release:
+    name: Create release
+    runs-on: ubuntu-latest
+    needs: [ build-windows-release, build-linux-release ]
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: false
+          path: ./artifacts/
+          pattern: touchup-*
+      - name: Zip up windows builds
+        run: |
+          mkdir ./output/
+          for DIR in ./artifacts/touchup-win-*/; do
+            cd "$DIR"
+            NAME=$(basename "$DIR")
+            zip -r "${{ github.workspace }}/output/$NAME.zip" .
+            cd -
+          done
+      - name: Rename Linux executables
+        run: |
+          for DIR in ./artifacts/touchup-linux-*/; do
+            cd "$DIR"
+            NAME=$(basename "$DIR")
+            zip -r "${{ github.workspace }}/output/$NAME.zip" .
+            cd -
+          done
+      - name: Create & upload release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./output/*
+  build-ffmpeg-windows:
+    name: Build FFmpeg for Windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: "./touchup/"
+      - name: Set FFmpeg git ref
+        id: set_ref
+        run: |
+          FFMPEG_REF=n$(cat ./touchup/ffmpeg_ver.txt)
+          echo "FFMPEG_REF=$FFMPEG_REF" >> $GITHUB_ENV
+          echo "ffmpeg_ref=$FFMPEG_REF" >> $GITHUB_OUTPUT
+      - name: Get FFmpeg from cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          key: "ffmpeg-${{ env.FFMPEG_REF }}"
+          path: out/
+      - name: Install packages
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: sudo apt-get install subversion ragel curl texinfo g++ ed bison flex cvs yasm automake libtool autoconf gcc cmake git make pkg-config zlib1g-dev unzip pax nasm gperf autogen bzip2 autoconf-archive p7zip-full meson clang python3-distutils python-is-python3 -y
+      - name: Checkout FFmpeg build script
+        uses: actions/checkout@v4
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          repository: 'rdp/ffmpeg-windows-build-helpers'
+          path: "."
+          fetch-depth: 1
+      - name: Build FFmpeg
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          ./cross_compile_ffmpeg.sh --ffmpeg-git-checkout-version=${{ env.FFMPEG_REF }} --build-ffmpeg-static=n --build-ffmpeg-shared=y --sandbox-ok=y --enable-gpl=n --git-get-latest=n --compiler-flavors=win64
+      - name: Copy FFmpeg dlls to artifact directory
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          mkdir out/
+          mkdir out/bin/
+          
+          # copy dll files
+          for FILE in sandbox/win64/ffmpeg_git_lgpl*/bin/{avcodec,avdevice,avformat,avutil,swresample,swscale}*.dll; do
+            cp "$FILE" out/bin/
+          done
+          # copy include headers
+          cp -r sandbox/win64/ffmpeg_git_lgpl*/bin/include out/include
+          # copy license
+          cp sandbox/win64/ffmpeg_git_lgpl*/COPYING.LGPLv2.1 out/LICENSE
+          # copy lib
+          cp -r sandbox/win64/ffmpeg_git_lgpl*/lib out/lib
+          # copy bin/*.lib files to lib dir
+          for FILE in sandbox/win64/ffmpeg_git_lgpl*/bin/*.lib; do
+            cp "$FILE" out/lib/
+          done
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: "ffmpeg-win64-${{ env.FFMPEG_REF }}"
+          path: out/
+  build-windows-release:
+    runs-on: windows-latest
+    name: Windows build
+    needs: [ build-ffmpeg-windows ]
+    strategy:
+      fail-fast: false
+      matrix:
+        type: [ default, mini ]
+        include:
+          - type: mini
+            features: "--no-default-features"
+    steps:
+      - uses: cargo-bins/cargo-binstall@main
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-release-${{ matrix.type }}-${{ hashFiles('**/Cargo.lock') }}
+      - name: Download FFmpeg artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ffmpeg-win64-*
+      - name: Rename FFmpeg artifact
+        shell: bash
+        run:
+          mv ffmpeg-win64-* ffmpeg
+        # absolutely stolen from ffmpeg-next: https://github.com/zmwangx/rust-ffmpeg/blob/1922ed055f96c368628e5b543ec4c59ddfa01ff4/.github/workflows/build.yml#L81-L90
+      - name: Install dependencies
+        run: |
+          $VCINSTALLDIR = $(& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath)
+          Add-Content $env:GITHUB_ENV "LIBCLANG_PATH=${VCINSTALLDIR}\VC\Tools\LLVM\x64\bin`n"
+          Add-Content $env:GITHUB_ENV "FFMPEG_DIR=${pwd}\ffmpeg`n"
+          Add-Content $env:GITHUB_PATH "${pwd}\ffmpeg\bin`n"
+      - name: Build
+        run: cargo build --release ${{ matrix.features }}
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          mkdir artifact
+          cp ./target/release/touchup.exe artifact/
+          for DLL in ./ffmpeg/bin/*.dll; do
+            mv "$DLL" ./artifact/
+          done
+          mv ./ffmpeg/LICENSE artifact/LICENSE_FFmpeg
+          cp ./LICENSE artifact/LICENSE_TouchUp
+          CLEARUP="$(cat .github/assets/WIN_LICENSE_CLEARUP)"
+          FFMPEG_VER="$(cat ./ffmpeg_ver.txt)"
+          printf "$CLEARUP" "$FFMPEG_VER" >> artifact/LICENSE
+      - name: Generate LICENSES.html file
+        shell: bash
+        run: |
+          cargo binstall cargo-about --no-confirm
+          cargo about generate -o artifact/LICENSES.html about.hbs --fail ${{ matrix.features }}
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: touchup-win-${{ matrix.type }}
+          path: artifact/
+
+  build-linux-release:
+    runs-on: ubuntu-latest
+    name: Linux build
+    strategy:
+      fail-fast: false
+      matrix:
+        type: [ default, mini ]
+        include:
+          - type: mini
+            features: "--no-default-features"
+    steps:
+      - uses: cargo-bins/cargo-binstall@main
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-release-${{ matrix.type }}-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install linux packages
+        run: |
+          echo "---- FFmpeg dependencies"
+          sudo apt-get install -y clang libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev pkg-config
+          echo "---- Rodio dependencies"
+          sudo apt-get install -y libasound2-dev
+      - name: Build
+        run: cargo build --release ${{ matrix.features }}
+      - name: Move built executable
+        run: |
+          mkdir artifact
+          mv target/release/touchup ./artifact/touchup
+      - name: License stuff
+        run: |
+          cargo binstall cargo-about --no-confirm
+          cargo about generate -o artifact/LICENSES.html about.hbs --fail ${{ matrix.features }}
+          cp ./LICENSE ./artifact/LICENSE_TouchUp
+          cp .github/assets/LINUX_LICENSE_CLEARUP ./artifact/LICENSE
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: touchup-linux-${{ matrix.type }}
+          path: artifact/

@@ -50,5 +50,8 @@ Default features (such as `youtube`) can be disabled by also passing `--no-defau
 
 - `youtube` (enabled by default): enables support for uploading clips to YouTube. You
   may want to disable this to speed up compilation time or to not depend on the `async` feature (see below)
-- `async` (required for `youtube`): spins up an async runtime. This may be somewhat taxing
+- `update` (enabled by default): enables self-updates. This may not work on certain
+  operating systems if they do not support file locking, but it's recommended to make
+  sure you receive both important and unimportant updates. (the app *always* asks you before updating)
+- `async` (required for `youtube` & `update`): spins up an async runtime. This may be somewhat taxing
   on your device and might decrease compilation time, but it'll most likely be fine.

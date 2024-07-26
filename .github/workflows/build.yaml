@@ -1,0 +1,42 @@
+name: Test
+
+on: push
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Test TouchUp compilation
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest ] #todo
+        enable-yt: [ enable-yt, disable-yt ]
+        enable-upd: [ enable-upd, disable-upd ]
+        include:
+          - enable-yt: enable-yt
+            yt: "-F youtube"
+          - enable-upd: enable-upd
+            upd: "-F update"
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ matrix.enable-yt }}-${{ matrix.enable-upd }}-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install linux packages
+        run: |
+          echo "---- FFmpeg dependencies"
+          sudo apt-get install -y clang libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev pkg-config
+          echo "---- Rodio dependencies"
+          sudo apt-get install -y libasound2-dev
+      - name: Build TouchUp
+        run: |
+          cargo build --profile fast-build --no-default-features ${{ matrix.yt }} ${{ matrix.upd }}

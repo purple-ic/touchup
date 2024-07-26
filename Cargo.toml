@@ -15,8 +15,9 @@ egui = { version = "0.28.1", features = ["persistence", "serde"] }
 eframe = { version = "0.28.1", features = ["persistence", "serde"] }
 egui_extras = { version = "0.28.1", default-features = false, features = ["svg", "serde"] }
 
-ffmpeg-next = { version = "7.0.2" }
-rodio = "0.19.0"
+ffmpeg-next = { version = "7.0.2", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
+rodio = { version = "0.19.0", default-features = false }
+futures-util = { version = "0.3.30", optional = true }
 
 # file dialog library
 rfd = "0.14.1"
@@ -37,9 +38,13 @@ serde = { version = "1.0.203", features = ["derive"] }
 # `hyper` feature
 hyper = { version = "1.4.1", optional = true }
 hyper-util = { version = "0.1.6", features = ["http2", "http1", "client-legacy"], optional = true }
-rustls = { version = "0.23.12", features = ["ring"], optional = true }
-hyper-rustls = { version = "0.27.2", features = ["http2", "http1", "ring"], optional = true }
+rustls = { version = "0.23.12", default-features = false, optional = true }
+hyper-rustls = { version = "0.27.2", features = ["http2", "http1", "ring", "native-tokio", "tls12", "logging"], default-features = false, optional = true }
 http-body-util = { version = "0.1.2", optional = true }
+
+tempfile = { version = "3.10.1", optional = true }
+zip = { version = "2.1.5", optional = true }
+self-replace = { version = "1.4.0", optional = true }
 
 [dependencies.parking_lot]
 # absolutely make sure this matches egui's version of parking_lot (https://github.com/emilk/egui/blob/master/Cargo.toml)
@@ -50,15 +55,21 @@ features = ["send_guard"]
 [profile.dev]
 opt-level = 2
 
+[profile.fast-build]
+# todo: maybe `cargo check` is enough?
+inherits = "dev"
+opt-level = 1
+
 [features]
 hyper = ["dep:hyper", "dep:hyper-util", "dep:hyper-rustls", "dep:http-body-util", "dep:rustls"]
-default = ["youtube"]
+default = ["youtube", "update"]
 # enables youtube uploading
 #   if disabled, the upload to youtube button won't appear at all.
 #   depends on the `async` feature
 youtube = ["async", "dep:yup-oauth2", "dep:serde_json", "tokio/fs", "hyper"]
+update = ["async", "hyper", "dep:tempfile", "dep:zip", "dep:self-replace"]
 # enables the async runtime
 #   the async runtime is a single thread separate from the UI thread
 #   so all async tasks run on a single thread. this is fine since
 #   we only use async for uploads
-async = ["dep:tokio"]
+async = ["dep:tokio", "dep:futures-util"]
