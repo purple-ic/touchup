@@ -359,8 +359,8 @@ impl Player {
 
         let scaler = video_decoder
             .converter(
-                // convert to rgb24 pixel format and keep the same resolution
-                Pixel::RGB24,
+                // convert to rgba pixel format and keep the same resolution
+                Pixel::RGBA,
             )
             .unwrap_or_else(|e| todo!("could not create scaler: {e}"));
 
@@ -663,13 +663,7 @@ impl VideoManager {
             .run(&self.frame, &mut self.frame_scaled)
             .unwrap();
         let delta = ImageDelta::full(
-            ColorImage::from_rgb(
-                [
-                    self.frame_scaled.width() as usize,
-                    self.frame_scaled.height() as usize,
-                ],
-                self.frame_scaled.data(0),
-            ),
+            ffmpeg_to_egui_img(&self.frame_scaled),
             TextureOptions::default(),
         );
 
@@ -905,14 +899,66 @@ impl VideoManager {
             self.scaler
                 .run(&self.frame, &mut self.frame_scaled)
                 .unwrap();
-            self.image = ColorImage::from_rgb(
-                [
-                    self.decoder.width() as usize,
-                    self.decoder.height() as usize,
-                ],
-                self.frame_scaled.data(0),
+            self.image = ffmpeg_to_egui_img(&self.frame_scaled)
+        }
+    }
+}
+
+fn ffmpeg_to_egui_img(frame: &VideoFrame) -> ColorImage {
+    let size = [frame.width() as usize, frame.height() as usize];
+    let data = frame.data(0);
+    let total_pixels = size[0] * size[1];
+    let total_bytes = total_pixels * 4;
+    if total_bytes != data.len() {
+        /*
+        when the width of the frame isn't a multiple of 32,
+        ffmpeg adds padding to make it so.
+
+        stride (aka linesize) tells us how many bytes are
+        stored by ffmped per line,
+
+        we have to go through each line (each Y position) and
+        copy to our new buffer only the data that actually matters
+        (ignoring the padding bytes added to each line)
+
+        note that if no padding is added, we don't do all of this
+        and just copy the buffer as-is
+         */
+        let mut buf = Vec::with_capacity(total_pixels);
+        let line_size = frame.stride(0);
+        let real_line_size = size[0] * 4;
+
+        for y in 0..size[1] /* height */ {
+            let real_data = &data[(y * line_size)..][..real_line_size];
+            buf.extend(
+                // before adding to our buffer, convert the bytes to pixels
+                real_data
+                    .chunks_exact(4)
+                    // on the use of premultiplied alpha, see the else block below
+                    .map(|p| Color32::from_rgba_premultiplied(p[0], p[1], p[2], p[3]))
             );
         }
+        // make sure no reallocations were made in debug mode
+        debug_assert!(buf.len() == total_pixels);
+        ColorImage {
+            size,
+            pixels: buf,
+        }
+    } else {
+        /*
+        it is technically incorrect to use from_rgba_premultiplied, since
+        ffmpeg always gives us unmultiplied alpha, however assuming
+        premupltiplied alpha means that the conversion from pixels to
+        bytes is essentially free (most likely compiled to no-op).
+        (egui only wants to work with premultiplied alpha)
+
+        this will *probably* create weird results with transparent videos
+        but who in the world even uses transparent videos anyway?
+         */
+        ColorImage::from_rgba_premultiplied(
+            size,
+            data,
+        )
     }
 }
 

@@ -333,6 +333,7 @@ pub fn export(
     let file_name = input_path.file_name().unwrap();
     let mut out_path =
         PathBuf::from(ctx.data_mut(|d| d.get_persisted::<String>(Id::new("outPath")).unwrap()));
+    fs::create_dir_all(&out_path).unwrap();
     out_path.push(file_name);
 
     let mut output = output(&out_path).unwrap();
