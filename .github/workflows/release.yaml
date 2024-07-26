@@ -25,6 +25,7 @@ jobs:
           pattern: touchup-*
       - name: Zip up windows builds
         run: |
+          mkdir ./outputs/
           for DIR in ./artifacts/touchup-win-*/; do
             NAME=$(basename "$DIR")
             zip -r "./outputs/$NAME.zip" $DIR
