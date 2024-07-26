@@ -110,10 +110,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        type: [ default ] #, mini ]
-    #        include:
-    #          - type: mini
-    #            features: "--no-default-features"
+        type: [ default, mini ]
+        include:
+          - type: mini
+            features: "--no-default-features"
     steps:
       - uses: cargo-bins/cargo-binstall@main
       - uses: actions/checkout@v4
@@ -173,10 +173,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        type: [ default ] #, mini ]
-    #        include:
-    #          - type: mini
-    #            features: "--no-default-features"
+        type: [ default, mini ]
+        include:
+          - type: mini
+            features: "--no-default-features"
     steps:
       - uses: cargo-bins/cargo-binstall@main
       - uses: actions/checkout@v4
