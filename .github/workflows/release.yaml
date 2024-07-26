@@ -29,7 +29,7 @@ jobs:
           for DIR in ./artifacts/touchup-win-*/; do
             cd "$DIR"
             NAME=$(basename "$DIR")
-            zip -r "./output/$NAME.zip" .
+            zip -r "${{ github.workspace }}/output/$NAME.zip" .
             cd -
           done
       - name: Rename Linux executables
@@ -37,7 +37,7 @@ jobs:
           for DIR in ./artifacts/touchup-linux-*/; do
             cd "$DIR"
             NAME=$(basename "$DIR")
-            zip -r "./output/$NAME.zip" .
+            zip -r "${{ github.workspace }}/output/$NAME.zip" .
             cd -
           done
       - name: Create & upload release
