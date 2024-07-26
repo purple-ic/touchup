@@ -139,7 +139,7 @@ jobs:
         run: cargo build --release ${{ matrix.features }}
       - name: Generate LICENSES.html file
         shell: bash
-        run:
+        run: |
           cargo install cargo-about
           cargo about generate -o artifact/LICENSES.html about.hbs --fail ${{ matrix.features }}
       - name: Prepare artifact
@@ -191,11 +191,11 @@ jobs:
       - name: Build
         run: cargo build --release ${{ matrix.features }}
       - name: Move built executable
-        run:
+        run: |
           mkdir artifact
           mv target/release/touchup ./artifact/touchup
       - name: License stuff
-        run:
+        run: |
           cargo install cargo-about
           cargo about generate -o artifact/LICENSES.html about.hbs --fail ${{ matrix.features }}
           cp ./LICENSE ./artifact/LICENSE_TouchUp
