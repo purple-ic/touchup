@@ -1,13 +1,9 @@
 name: Release
 
 on:
-  # todo: change this to:
-  #  push:
-  #    tags:
-  #      - "v*"
   push:
-    branches:
-      - workflow_test
+    tags:
+      - "v*"
 
 env:
   CARGO_TERM_COLOR: always
