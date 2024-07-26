@@ -154,7 +154,7 @@ jobs:
       - name: Generate LICENSES.html file
         shell: bash
         run: |
-          cargo binstall cargo-about
+          cargo binstall cargo-about --no-confirm
           cargo about generate -o artifact/LICENSES.html about.hbs --fail ${{ matrix.features }}
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -198,7 +198,7 @@ jobs:
           mv target/release/touchup ./artifact/touchup
       - name: License stuff
         run: |
-          cargo binstall cargo-about
+          cargo binstall cargo-about --no-confirm
           cargo about generate -o artifact/LICENSES.html about.hbs --fail ${{ matrix.features }}
           cp ./LICENSE ./artifact/LICENSE_TouchUp
           cp .github/assets/LINUX_LICENSE_CLEARUP ./artifact/LICENSE
