@@ -1,0 +1,6 @@
+Parts of TouchUp are distributed under different licenses.
+
+touchup.exe combines the compiled output of hundreds of Rust crates. While our
+own code is under the MIT license, parts of the executable use the licenses
+available in LICENSES.html
+LICENSES.html also contains attributions to all used crates.

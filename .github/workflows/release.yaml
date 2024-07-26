@@ -25,17 +25,20 @@ jobs:
           pattern: touchup-*
       - name: Zip up windows builds
         run: |
-          for DIR in ./artifacts/touchup-win-*/; {
-            NAME=$(basename $DIR)
-            zip -r "./$NAME.zip" $DIR
-          }
+          for DIR in ./artifacts/touchup-win-*/; do
+            NAME=$(basename "$DIR")
+            zip -r "./outputs/$NAME.zip" $DIR
+          done
+      - name: Rename Linux executables
+        run: |
+          for DIR in ./artifacts/touchup-linux-*/; do
+            NAME=$(basename "$DIR")
+            mv "$DIR/touchup" "./output/$NAME"
+          done
       - name: Create & upload release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            artifacts/touchup-linux-*/touchup
-            ./touchup-win-*.zip
-
+          files: ./output/*
   build-ffmpeg-windows:
     name: Build FFmpeg for Windows
     runs-on: ubuntu-latest
@@ -134,6 +137,11 @@ jobs:
           Add-Content $env:GITHUB_PATH "${pwd}\ffmpeg\bin`n"
       - name: Build
         run: cargo build --release ${{ matrix.features }}
+      - name: Generate LICENSES.html file
+        shell: bash
+        run:
+          cargo install cargo-about
+          cargo about generate -o artifact/LICENSES.html about.hbs --fail ${{ matrix.features }}
       - name: Prepare artifact
         shell: bash
         run: |
@@ -144,7 +152,9 @@ jobs:
           done
           mv ./ffmpeg/LICENSE artifact/LICENSE_FFmpeg
           cp ./LICENSE artifact/LICENSE_TouchUp
-          cp ./.github/assets/LICENSE_CLEARUP artifact/LICENSE
+          CLEARUP="$(cat .github/assets/WIN_LICENSE_CLEARUP)"
+          FFMPEG_VER="$(cat ./ffmpeg-ver.txt)"
+          printf "$CLEARUP" "$FFMPEG_VER" >> artifact/LICENSE
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -180,8 +190,18 @@ jobs:
           sudo apt-get install -y libasound2-dev
       - name: Build
         run: cargo build --release ${{ matrix.features }}
+      - name: Move built executable
+        run:
+          mkdir artifact
+          mv target/release/touchup ./artifact/touchup
+      - name: License stuff
+        run:
+          cargo install cargo-about
+          cargo about generate -o artifact/LICENSES.html about.hbs --fail ${{ matrix.features }}
+          cp ./LICENSE ./artifact/LICENSE_TouchUp
+          cp .github/assets/LINUX_LICENSE_CLEARUP ./artifact/LICENSE
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: touchup-linux-${{ matrix.type }}
-          path: target/release/touchup
+          path: artifact/
