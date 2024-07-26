@@ -25,16 +25,16 @@ jobs:
           pattern: touchup-*
       - name: Zip up windows builds
         run: |
-          mkdir ./outputs/
+          mkdir ./output/
           for DIR in ./artifacts/touchup-win-*/; do
             NAME=$(basename "$DIR")
-            zip -r "./outputs/$NAME.zip" $DIR
+            zip -r "./output/$NAME.zip" $DIR
           done
       - name: Rename Linux executables
         run: |
           for DIR in ./artifacts/touchup-linux-*/; do
             NAME=$(basename "$DIR")
-            mv "$DIR/touchup" "./output/$NAME"
+            zip -r "./output/$NAME.zip" "$DIR"
           done
       - name: Create & upload release
         uses: softprops/action-gh-release@v2
