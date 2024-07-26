@@ -136,7 +136,7 @@ jobs:
           for DLL in ./ffmpeg/bin/*.dll; do
             mv "$DLL" ./artifact/
           done
-          mv ./ffmpeg/bin/LICENSE artifact/LICENSE_FFmpeg
+          mv ./ffmpeg/LICENSE artifact/LICENSE_FFmpeg
           cp ./LICENSE artifact/LICENSE_TouchUp
           cp ./.github/assets/LICENSE_CLEARUP artifact/LICENSE
       - name: Upload artifact
