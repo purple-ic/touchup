@@ -27,14 +27,18 @@ jobs:
         run: |
           mkdir ./output/
           for DIR in ./artifacts/touchup-win-*/; do
+            cd "$DIR"
             NAME=$(basename "$DIR")
-            zip -r "./output/$NAME.zip" $DIR
+            zip -r "./output/$NAME.zip" .
+            cd -
           done
       - name: Rename Linux executables
         run: |
           for DIR in ./artifacts/touchup-linux-*/; do
+            cd "$DIR"
             NAME=$(basename "$DIR")
-            zip -r "./output/$NAME.zip" "$DIR"
+            zip -r "./output/$NAME.zip" .
+            cd -
           done
       - name: Create & upload release
         uses: softprops/action-gh-release@v2
