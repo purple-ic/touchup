@@ -22,9 +22,9 @@ jobs:
           pattern: touchup-*
       - name: Zip up windows builds
         run: |
-          for DIR in ./artifacts/touchup-win-*; {
+          for DIR in ./artifacts/touchup-win-*/; {
             NAME=$(basename $DIR)
-            zip -r "artifacts/$NAME.zip" $FILE
+            zip -r "artifacts/$NAME.zip" $DIR
           }
       - name: Create & upload release
         uses: softprops/action-gh-release@v2
