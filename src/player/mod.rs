@@ -10,7 +10,7 @@ use eframe::egui::{
     Key, Label, Layout, Rect, Sense, Slider, Ui, Vec2, Widget, WidgetText,
 };
 use eframe::egui::load::SizedTexture;
-use egui::{CursorIcon, NumExt};
+use egui::{CursorIcon, NumExt, TextureId};
 use ffmpeg::format;
 use rfd::{MessageButtons, MessageDialog, MessageLevel};
 
@@ -86,6 +86,10 @@ impl PlayerUI {
 
     pub fn set_audio_track(&mut self, idx: usize) {
         self.player.set_audio_track(idx)
+    }
+
+    pub fn texture_id(&self) -> TextureId {
+        self.player.texture_id()
     }
 
     pub fn new(

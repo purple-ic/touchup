@@ -32,6 +32,14 @@ pub enum EditorExit {
 }
 
 impl Editor {
+    pub fn free_texture(&self, ctx: &Context) {
+        let tex = ctx.tex_manager();
+        let mut tex = tex.write();
+        let id = self.player.texture_id();
+        println!("freeing {id:?}");
+        tex.free(id)
+    }
+
     pub fn new(ctx: &Context, path: PathBuf, frame: &mut Frame) -> Option<Self> {
         let player = PlayerUI::new(ctx, &path, frame)?;
 

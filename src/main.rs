@@ -487,10 +487,12 @@ impl eframe::App for TouchUp {
                             {
                                 None => {}
                                 Some(EditorExit::ToSelectScreen) => {
+                                    player.free_texture(ctx);
                                     self.screen = Screen::Select(Self::select_screen(&ctx))
                                 }
                                 #[cfg(feature = "youtube")]
                                 Some(EditorExit::ToYoutubeScreen { init }) => {
+                                    player.free_texture(ctx);
                                     self.screen = Screen::YouTube(init);
                                 }
                             }
