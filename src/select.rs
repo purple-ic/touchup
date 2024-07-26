@@ -8,7 +8,7 @@ use rfd::{MessageButtons, MessageDialog, MessageLevel};
 
 use SelectScreenOut::*;
 
-use crate::{AuthArc, storage, youtube};
+use crate::{AuthArc, storage};
 
 pub struct SelectScreen {
     // dir_reader: OwnedThreads,
@@ -143,6 +143,7 @@ impl SelectScreen {
             ui.add_space(8.);
             #[cfg(feature = "youtube")]
             ui.group(|ui| {
+                use crate::youtube;
                 ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
                     let keep_login_delta =
                         checkbox(ui, "ytKeepLogin", "Stay logged in to YouTube",
@@ -205,7 +206,14 @@ impl SelectScreen {
                 Stay
             }
         } else if yt_login {
-            YtLogin
+            #[cfg(feature = "youtube")]
+            {
+                SelectScreenOut::YtLogin
+            }
+            #[cfg(not(feature = "youtube"))]
+            {
+                unreachable!()
+            }
         } else {
             Stay
         }

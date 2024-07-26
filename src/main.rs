@@ -1,6 +1,6 @@
 extern crate ffmpeg_next as ffmpeg;
 
-use std::fmt::{Debug, Formatter};
+use std::fmt::Debug;
 use std::future::Future;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -86,20 +86,8 @@ pub type AuthArc = Arc<RwLock<Auth>>;
 )))]
 pub type AuthArc = ();
 
-impl Debug for Auth {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Auth {{ .. }}")
-    }
-}
-
 fn storage() -> PathBuf {
     dbg!(storage_dir(APP_ID).unwrap())
-}
-
-impl Auth {
-    pub fn ctx(&self) -> &Context {
-        &self.ctx
-    }
 }
 
 const APP_ID: &'static str = "touch_up";
@@ -187,7 +175,7 @@ fn main() {
     )
         .unwrap();
 
-    #[cfg(feature = "youtube")]
+    #[cfg(feature = "async")]
     let _ = async_stop.send(());
 }
 
@@ -308,11 +296,18 @@ impl TouchUp {
     }
 
     pub fn new(cc: &CreationContext) -> Self {
+        #[cfg(any(
+            feature = "youtube"
+        ))]
         let auth = AuthArc::new(RwLock::new(Auth {
             ctx: cc.egui_ctx.clone(),
             #[cfg(feature = "youtube")]
             youtube: None,
         }));
+        #[cfg(not(any(
+            feature = "youtube"
+        )))]
+        let auth = ();
         let (task_cmd_sender, task_commands) = mpsc::channel();
         let mut screen = Screen::Select(Self::select_screen(&cc.egui_ctx));
         #[cfg(feature = "youtube")]
@@ -481,6 +476,7 @@ impl eframe::App for TouchUp {
                                     }
                                     ctx.request_repaint();
                                 }
+                                #[cfg(feature = "youtube")]
                                 SelectScreenOut::YtLogin => {
                                     self.screen = Screen::YouTubeLogin(youtube::YtAuthScreen::new(ui.ctx().clone(), self.auth.clone()))
                                 }
@@ -493,6 +489,7 @@ impl eframe::App for TouchUp {
                                 Some(EditorExit::ToSelectScreen) => {
                                     self.screen = Screen::Select(Self::select_screen(&ctx))
                                 }
+                                #[cfg(feature = "youtube")]
                                 Some(EditorExit::ToYoutubeScreen { init }) => {
                                     self.screen = Screen::YouTube(init);
                                 }

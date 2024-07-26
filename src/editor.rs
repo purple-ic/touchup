@@ -156,7 +156,10 @@ impl Editor {
                 status_sender,
                 path,
                 id,
+                #[cfg(any(feature = "youtube"))]
                 Arc::clone(&auth),
+                #[cfg(not(any(feature = "youtube")))]
+                (),
                 follow_up,
                 Sender::clone(task_cmds),
                 #[cfg(feature = "async")]
