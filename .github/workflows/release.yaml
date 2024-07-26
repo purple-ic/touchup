@@ -149,7 +149,7 @@ jobs:
           mv ./ffmpeg/LICENSE artifact/LICENSE_FFmpeg
           cp ./LICENSE artifact/LICENSE_TouchUp
           CLEARUP="$(cat .github/assets/WIN_LICENSE_CLEARUP)"
-          FFMPEG_VER="$(cat ./ffmpeg-ver.txt)"
+          FFMPEG_VER="$(cat ./ffmpeg_ver.txt)"
           printf "$CLEARUP" "$FFMPEG_VER" >> artifact/LICENSE
       - name: Generate LICENSES.html file
         shell: bash
