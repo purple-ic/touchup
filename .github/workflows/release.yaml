@@ -23,21 +23,12 @@ jobs:
         with:
           merge-multiple: false
           path: ./artifacts/
-      - name: Set up Windows release files
-        run: |
-          for DIR in artifacts/touchup-win-standalone-*/; do
-            type=$(cat $DIR/.type)
-
-            cp ffmpeg-win-*/bin/* $DIR/bin
-            cp ffmpeg-win-*/LICENSE $DIR/FFMPEG_LICENSE
-            zip -r ./touchup-win-$type.zip $DIR 
-          done
       - name: Create & upload release
         uses: softprops/action-gh-release@v2
         with:
           files:
             artifacts/touchup-linux-*/*
-            ./touchup-win-*.zip
+            artifacts/touchup-win-*/
 
   build-ffmpeg-windows:
     name: Build FFmpeg for Windows
@@ -142,11 +133,16 @@ jobs:
         run: |
           mkdir artifact
           cp ./target/release/touchup.exe artifact/
-          echo "${{ matrix.type }}" >> artifact/.type
+          for DLL in ./ffmpeg/bin/*.dll; do
+            mv "$DLL" ./artifact/
+          done
+          mv ./ffmpeg/bin/LICENSE artifact/LICENSE_FFmpeg
+          cp ./LICENSE artifact/LICENSE_TouchUp
+          cp ./.github/assets/LICENSE_CLEARUP artifact/LICENSE
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: touchup-win-standalone-${{ matrix.type }}
+          name: touchup-win-${{ matrix.type }}
           path: artifact/
 
   build-linux-release:

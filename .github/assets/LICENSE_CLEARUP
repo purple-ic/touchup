@@ -1,0 +1,12 @@
+Parts of TouchUp are distributed under different licenses.
+
+touchup.exe is under the MIT license, available in the LICENSE_TouchUp file.
+
+FFmpeg libraries are under the LGPLv2.1, available in the LICENSE_FFmpeg file.
+This includes the following files (library versions are replaced with *):
+- avcodec-*.dll
+- avdevice-*.dll
+- avformat-*.dll
+- avutil-*.dll
+- swresample-*.dll
+- swscale-*.dll
