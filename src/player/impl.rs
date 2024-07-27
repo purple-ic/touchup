@@ -578,6 +578,12 @@ impl VideoManager {
             self.stream_idx,
             target_ts,
         );
+        if pause {
+            self.scaler.run(&self.frame, &mut self.frame_scaled)
+                .unwrap();
+            let mut tex = self.texture.lock().unwrap();
+            update_texture(&self.frame_scaled, &mut tex);
+        }
 
         let new_frame_time = target;
         dbg!(new_frame_time);
