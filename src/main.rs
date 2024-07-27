@@ -4,19 +4,19 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::{Arc, Barrier, mpsc, OnceLock};
+use std::sync::{Arc, Barrier, mpsc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-use eframe::{CreationContext, egui, Frame, NativeOptions, storage_dir};
+use eframe::{CreationContext, egui, egui_glow, Frame, glow, NativeOptions, storage_dir};
 use eframe::egui::{CentralPanel, Widget};
 use eframe::egui::load::TextureLoader;
-use egui::{
-    Align, Color32, Context, Id, Label, Layout,
-    ProgressBar, RichText, ScrollArea, TopBottomPanel,
-    ViewportBuilder, Visuals, WidgetText,
-};
+use eframe::egui_glow::{CallbackFn, check_for_gl_error};
+use eframe::epaint::PaintCallbackInfo;
+use eframe::glow::{HasContext, INVALID_ENUM, PixelUnpackData, TEXTURE_2D};
+use egui::{Align, Color32, Context, Id, ImageData, Label, Layout, ProgressBar, Rect, RichText, ScrollArea, TextureId, TopBottomPanel, ViewportBuilder, Visuals, WidgetText};
 use egui::epaint::mutex::RwLock;
+use egui::epaint::TextureManager;
 use egui::panel::TopBottomSide;
 use replace_with::replace_with;
 use serde::{Deserialize, Serialize};
@@ -29,19 +29,20 @@ mod editor;
 pub mod export;
 pub mod player;
 mod select;
+mod updater;
 mod util;
 mod youtube;
-mod updater;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg(feature = "hyper")]
-pub type HttpsConnector = hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>;
+pub type HttpsConnector =
+hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>;
 
 #[cfg(feature = "hyper")]
 pub type HttpsClient = hyper_util::client::legacy::Client<
     HttpsConnector,
-    http_body_util::Full<std::io::Cursor<Vec<u8>>>
+    http_body_util::Full<std::io::Cursor<Vec<u8>>>,
 >;
 
 #[cfg(feature = "hyper")]
@@ -68,22 +69,16 @@ pub fn https_client() -> &'static HttpsClient {
 }
 
 #[derive(Default)]
-#[cfg(any(
-    feature = "youtube"
-))]
+#[cfg(any(feature = "youtube"))]
 pub struct Auth {
     pub ctx: Context,
     #[cfg(feature = "youtube")]
     pub youtube: Option<youtube::YtAuth>,
 }
 
-#[cfg(any(
-    feature = "youtube"
-))]
+#[cfg(any(feature = "youtube"))]
 pub type AuthArc = Arc<RwLock<Auth>>;
-#[cfg(not(any(
-    feature = "youtube"
-)))]
+#[cfg(not(any(feature = "youtube")))]
 pub type AuthArc = ();
 
 fn storage() -> PathBuf {
@@ -163,7 +158,8 @@ fn main() {
     eframe::run_native(
         "TouchUp",
         NativeOptions {
-            viewport: ViewportBuilder::default().with_app_id(APP_ID.to_owned())
+            viewport: ViewportBuilder::default()
+                .with_app_id(APP_ID.to_owned())
                 // todo: disable drag & drop when not needed
                 .with_drag_and_drop(true),
             ..NativeOptions::default()
@@ -197,7 +193,7 @@ impl Screen {
             #[cfg(feature = "youtube")]
             YouTube(_) => "youtubeScreen",
             #[cfg(feature = "youtube")]
-            YouTubeLogin(_) => "youtubeLoginScreen"
+            YouTubeLogin(_) => "youtubeLoginScreen",
         }
     }
 }
@@ -273,6 +269,14 @@ pub enum TaskCommand {
     Cancel { id: u32 },
 }
 
+pub struct PlayerTexture {
+    /// \[width, height] in pixels
+    pub size: [usize; 2],
+    /// in rgb24 bytes
+    pub bytes: Vec<u8>,
+    pub changed: bool,
+}
+
 struct TouchUp {
     screen: Screen,
     // the tasks should be sorted by their IDs
@@ -286,36 +290,140 @@ struct TouchUp {
     task_cmd_sender: mpsc::Sender<TaskCommand>,
 
     auth: AuthArc,
+
+    current_tex: Option<CurrentTex>,
+    texture: TextureArc,
+}
+
+struct CurrentTex {
+    id: TextureId,
+    native: glow::Texture,
+    size: [usize; 2],
+}
+
+pub type TextureArc = Arc<Mutex<PlayerTexture>>;
+
+fn set_player_texture_settings(gl: &glow::Context) {
+    unsafe {
+        gl.tex_parameter_i32(
+            TEXTURE_2D,
+            glow::TEXTURE_MAG_FILTER,
+            glow::LINEAR as i32,
+        );
+        gl.tex_parameter_i32(
+            TEXTURE_2D,
+            glow::TEXTURE_MIN_FILTER,
+            glow::LINEAR as i32,
+        );
+
+        gl.tex_parameter_i32(
+            TEXTURE_2D,
+            glow::TEXTURE_WRAP_S,
+            glow::CLAMP_TO_EDGE as i32,
+        );
+        gl.tex_parameter_i32(
+            TEXTURE_2D,
+            glow::TEXTURE_WRAP_T,
+            glow::CLAMP_TO_EDGE as i32,
+        );
+    }
+    check_for_gl_error!(gl, "trying to set tex params");
 }
 
 impl TouchUp {
+    fn init_texture(texture: glow::Texture, gl: &glow::Context, size: [usize; 2], data: &[u8]) {
+        unsafe {
+            gl.get_error();
+            gl.bind_texture(TEXTURE_2D, Some(texture));
+            set_player_texture_settings(gl);
+            // using RGB instead of SRGB makes the images.. way brighter?
+            //  kind of interesting that it makes them brighter instead of loosing quality
+            //  even though the source format is still the same
+            gl.tex_image_2d(TEXTURE_2D, 0, glow::SRGB8 as i32, size[0].try_into().unwrap(), size[1].try_into().unwrap(), 0, glow::RGB, glow::UNSIGNED_BYTE, Some(data));
+            gl.bind_texture(TEXTURE_2D, None);
+        }
+    }
+
+    fn create_texture(size: [usize; 2], data: &[u8], frame: &mut Frame) -> CurrentTex {
+        let gl = frame.gl().unwrap();
+        let texture = unsafe { gl.create_texture() }.unwrap();
+        Self::init_texture(texture, gl, size, data);
+        check_for_gl_error!(gl, "trying to initialize texture");
+        let texture_id = frame.register_native_glow_texture(texture);
+        CurrentTex {
+            id: texture_id,
+            native: texture,
+            size,
+        }
+    }
+
+    fn react_to_tex_update(&mut self, ctx: &Context, frame: &mut Frame) {
+        // todo: this texture system leaves a frame or two where the last-played-frame of the previous video is visible
+        if let Ok(mut tex) = self.texture.try_lock() {
+            if tex.changed {
+                tex.changed = false;
+
+                if let Some(current_tex) = &mut self.current_tex {
+                    if current_tex.size != tex.size {
+                        println!("texture resizing");
+
+                        current_tex.size = tex.size;
+                        let gl = frame.gl().unwrap();
+                        // tell gl to reallocate the texture with a new size
+                        Self::init_texture(current_tex.native, gl, tex.size, &tex.bytes);
+                        check_for_gl_error!(gl, "trying to reinitialize texture for new size");
+                    } else {
+                        // println!("updating texture");
+                        let gl = frame.gl().unwrap();
+                        unsafe {
+                            gl.get_error();
+                            gl.bind_texture(TEXTURE_2D, Some(current_tex.native));
+                            set_player_texture_settings(gl);
+                            gl.tex_sub_image_2d(
+                                TEXTURE_2D,
+                                0,
+                                0,
+                                0,
+                                tex.size[0].try_into().unwrap(),
+                                tex.size[1].try_into().unwrap(),
+                                glow::RGB,
+                                glow::UNSIGNED_BYTE,
+                                PixelUnpackData::Slice(&tex.bytes),
+                            );
+                            gl.bind_texture(TEXTURE_2D, None);
+                            check_for_gl_error!(&gl, "while attempting to update the player texture")
+                        }
+                    }
+                } else {
+                    println!("creating texture");
+                    self.current_tex = Some(Self::create_texture(tex.size, &tex.bytes, frame));
+                };
+            }
+        }
+    }
+
     fn select_screen(ctx: &Context) -> SelectScreen {
-        SelectScreen::new(
-            ctx.clone(),
-        )
+        SelectScreen::new(ctx.clone())
     }
 
     pub fn new(cc: &CreationContext) -> Self {
-        #[cfg(any(
-            feature = "youtube"
-        ))]
+        #[cfg(any(feature = "youtube"))]
         let auth = AuthArc::new(RwLock::new(Auth {
             ctx: cc.egui_ctx.clone(),
             #[cfg(feature = "youtube")]
             youtube: None,
         }));
-        #[cfg(not(any(
-            feature = "youtube"
-        )))]
+        #[cfg(not(any(feature = "youtube")))]
         let auth = ();
         let (task_cmd_sender, task_commands) = mpsc::channel();
         let mut screen = Screen::Select(Self::select_screen(&cc.egui_ctx));
         #[cfg(feature = "youtube")]
         if youtube::yt_token_file().exists() {
             // if the token file exists, attempt to log into youtube right now
-            screen = Screen::YouTubeLogin(
-                youtube::YtAuthScreen::new(cc.egui_ctx.clone(), AuthArc::clone(&auth))
-            )
+            screen = Screen::YouTubeLogin(youtube::YtAuthScreen::new(
+                cc.egui_ctx.clone(),
+                AuthArc::clone(&auth),
+            ))
         }
 
         TouchUp {
@@ -324,6 +432,12 @@ impl TouchUp {
             task_commands,
             task_cmd_sender,
             auth,
+            current_tex: None,
+            texture: Arc::new(Mutex::new(PlayerTexture {
+                size: [0, 0],
+                bytes: vec![],
+                changed: false,
+            })),
         }
     }
 }
@@ -423,7 +537,8 @@ fn draw_tasks(
             } else {
                 let mut text = RichText::new(status.stage.name());
                 if status.progress == f32::NEG_INFINITY {
-                    text = text.color(Color32::from_rgb(222, 53, 53))
+                    text = text
+                        .color(Color32::from_rgb(222, 53, 53))
                         .strong()
                         .size(16.)
                 }
@@ -456,67 +571,72 @@ fn draw_tasks(
 
 impl eframe::App for TouchUp {
     fn update(&mut self, ctx: &Context, frame: &mut Frame) {
-        // let mut task_render_start = ctx.input(|i| i.viewport().inner_rect.map(|r| r.right_top()).unwrap_or_default());
-
+        self.react_to_tex_update(ctx, frame);
         draw_tasks(ctx, &mut self.tasks.1, &mut self.task_commands);
 
         CentralPanel::default().show(ctx, |ui| {
             ScrollArea::vertical().show(ui, |ui| {
                 ui.push_id(self.screen.id(), |ui| {
                     match &mut self.screen {
-                        Screen::Select(select) => {
-                            match select.draw(ui, frame, &self.auth) {
-                                SelectScreenOut::Stay => {}
-                                SelectScreenOut::Edit(to_open) => {
-                                    match Editor::new(ctx, to_open, frame) {
-                                        None => {}
-                                        Some(screen) => {
-                                            self.screen = Screen::Edit(screen);
-                                        }
+                        Screen::Select(select) => match select.draw(ui, frame, &self.auth) {
+                            SelectScreenOut::Stay => {}
+                            SelectScreenOut::Edit(to_open) => {
+                                match Editor::new(ctx, to_open, frame, Arc::clone(&self.texture)) {
+                                    None => {}
+                                    Some(screen) => {
+                                        self.screen = Screen::Edit(screen);
                                     }
-                                    ctx.request_repaint();
                                 }
-                                #[cfg(feature = "youtube")]
-                                SelectScreenOut::YtLogin => {
-                                    self.screen = Screen::YouTubeLogin(youtube::YtAuthScreen::new(ui.ctx().clone(), self.auth.clone()))
-                                }
+                                ctx.request_repaint();
                             }
-                        }
+                            #[cfg(feature = "youtube")]
+                            SelectScreenOut::YtLogin => {
+                                self.screen = Screen::YouTubeLogin(youtube::YtAuthScreen::new(
+                                    ui.ctx().clone(),
+                                    self.auth.clone(),
+                                ))
+                            }
+                        },
                         Screen::Edit(player) => {
-                            match player.draw(&mut self.tasks, &self.auth, ui, &self.task_cmd_sender)
-                            {
+                            match player.draw(
+                                &mut self.tasks,
+                                &self.auth,
+                                ui,
+                                &self.task_cmd_sender,
+                                self.current_tex.as_ref()
+                                    .map(|CurrentTex { id, .. }| id),
+                            ) {
                                 None => {}
                                 Some(EditorExit::ToSelectScreen) => {
-                                    player.free_texture(ctx);
                                     self.screen = Screen::Select(Self::select_screen(&ctx))
                                 }
                                 #[cfg(feature = "youtube")]
                                 Some(EditorExit::ToYoutubeScreen { init }) => {
-                                    player.free_texture(ctx);
                                     self.screen = Screen::YouTube(init);
                                 }
                             }
                         }
                         #[cfg(feature = "youtube")]
                         Screen::YouTube(yt) => {
-                            if yt.draw(ui, &mut self.tasks.1)
-                            {
+                            if yt.draw(ui, &mut self.tasks.1) {
                                 self.screen = Screen::Select(Self::select_screen(&ctx))
                             }
                         }
                         #[cfg(feature = "youtube")]
-                        Screen::YouTubeLogin(_) => {
-                            replace_with(&mut self.screen, || {
-                                Screen::Select(Self::select_screen(&ctx))
-                            }, |s| {
+                        Screen::YouTubeLogin(_) => replace_with(
+                            &mut self.screen,
+                            || Screen::Select(Self::select_screen(&ctx)),
+                            |s| {
                                 let login = match s {
                                     Screen::YouTubeLogin(v) => v,
-                                    _ => unreachable!()
+                                    _ => unreachable!(),
                                 };
-                                login.draw(ui, &self.auth).map(Screen::YouTubeLogin)
+                                login
+                                    .draw(ui, &self.auth)
+                                    .map(Screen::YouTubeLogin)
                                     .unwrap_or_else(|| Screen::Select(Self::select_screen(&ctx)))
-                            })
-                        }
+                            },
+                        ),
                     };
                 });
             });

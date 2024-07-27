@@ -6,11 +6,12 @@ use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use eframe::emath::{Pos2, Rect};
+use eframe::epaint::TextureId;
 use eframe::Frame;
 use egui::{Align, Align2, Button, Color32, Context, CursorIcon, FontId, Image, include_image, Layout, RichText, Sense, Ui, Vec2, Widget, WidgetText};
 use egui::load::ImageLoader;
 
-use crate::{AuthArc, Task, TaskCommand, TaskStage, TaskStatus};
+use crate::{AuthArc, Task, TaskCommand, TaskStage, TaskStatus, TextureArc};
 use crate::editor::EditorExit::ToSelectScreen;
 use crate::export::ExportFollowUp;
 use crate::player::{PlayerUI, write_duration};
@@ -32,16 +33,8 @@ pub enum EditorExit {
 }
 
 impl Editor {
-    pub fn free_texture(&self, ctx: &Context) {
-        let tex = ctx.tex_manager();
-        let mut tex = tex.write();
-        let id = self.player.texture_id();
-        println!("freeing {id:?}");
-        tex.free(id)
-    }
-
-    pub fn new(ctx: &Context, path: PathBuf, frame: &mut Frame) -> Option<Self> {
-        let player = PlayerUI::new(ctx, &path, frame)?;
+    pub fn new(ctx: &Context, path: PathBuf, frame: &mut Frame, texture: TextureArc) -> Option<Self> {
+        let player = PlayerUI::new(ctx, &path, frame, texture)?;
 
         Some(Editor {
             trim: (0.)..=player.duration().as_secs_f32(),
@@ -58,6 +51,7 @@ impl Editor {
         auth: &AuthArc,
         ui: &mut Ui,
         task_cmds: &Sender<TaskCommand>,
+        current_texture: Option<&TextureId>,
     ) -> Option<EditorExit> {
         let mut exit = None;
 
@@ -70,7 +64,7 @@ impl Editor {
             exit = Some(ToSelectScreen)
         }
 
-        self.player.draw(&self.trim, ui);
+        self.player.draw(&self.trim, ui, current_texture);
         ui.add_space(15.);
 
         let total_width = ui.available_width();

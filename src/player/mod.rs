@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
@@ -11,10 +12,11 @@ use eframe::egui::{
 };
 use eframe::egui::load::SizedTexture;
 use egui::{CursorIcon, NumExt, TextureId};
+use egui::load::Bytes;
 use ffmpeg::format;
 use rfd::{MessageButtons, MessageDialog, MessageLevel};
 
-use crate::{AuthArc, TaskCommand, TaskStatus};
+use crate::{AuthArc, TaskCommand, TaskStatus, TextureArc};
 use crate::export::ExportFollowUp;
 use crate::player::r#impl::Player;
 use crate::util::{BoolExt, time_diff};
@@ -88,14 +90,11 @@ impl PlayerUI {
         self.player.set_audio_track(idx)
     }
 
-    pub fn texture_id(&self) -> TextureId {
-        self.player.texture_id()
-    }
-
     pub fn new(
         ctx: &Context,
         path: &(impl AsRef<Path> + ?Sized),
         frame: &mut Frame,
+        texture: TextureArc
     ) -> Option<Self> {
         let input = match format::input(path) {
             Ok(i) => i,
@@ -129,6 +128,7 @@ impl PlayerUI {
                 input,
                 path.as_ref().into(),
                 if enable_sound { volume } else { 0. },
+                texture
             ),
             last_preview: None,
             force_controls: false,
@@ -137,18 +137,23 @@ impl PlayerUI {
         })
     }
 
-    pub fn draw(&mut self, trim: &RangeInclusive<f32>, ui: &mut Ui) {
+    pub fn draw(&mut self, trim: &RangeInclusive<f32>, ui: &mut Ui, current_texture: Option<&TextureId>) {
         let ctx = ui.ctx().clone() /* ctx is rc'd */;
 
         if !self.player.is_paused() {
             ctx.request_repaint_after(self.player.frame_time());
         }
 
-        let texture_id = self.player.texture_id();
         let [w, h] = self.player.resolution();
 
         let source =
-            ImageSource::Texture(SizedTexture::new(texture_id, Vec2::new(w as f32, h as f32)));
+            match current_texture {
+                None => ImageSource::Bytes {
+                    uri: Cow::Borrowed("bytes://empty"),
+                    bytes: Bytes::Static(&[]),
+                },
+                Some(current_texture) => ImageSource::Texture(SizedTexture::new(*current_texture, Vec2::new(w as f32, h as f32))),
+            };
         let video_response = ui.add(Image::new(source).fit_to_exact_size(ui.available_size()));
         let video_rect = video_response.rect;
 

@@ -1,4 +1,3 @@
-use std::{mem, thread};
 use std::cmp::min;
 use std::ffi::c_int;
 use std::mem::size_of;
@@ -7,10 +6,10 @@ use std::ops::ControlFlow::{Break, Continue};
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc, Mutex};
 use std::sync::mpsc::{Receiver, Sender, SyncSender};
+use std::thread;
 use std::time::{Duration, Instant};
 
-use eframe::egui::{Color32, ColorImage, Context, TextureId, TextureOptions};
-use eframe::epaint::ImageDelta;
+use eframe::egui::Context;
 use ffmpeg::{media, Packet, Stream, StreamMut};
 use ffmpeg::codec::context::Context as CodecContext;
 use ffmpeg::ffi::{av_seek_frame, AVDiscard, AVSEEK_FLAG_BACKWARD};
@@ -32,7 +31,7 @@ use rodio::{OutputStream, Sink, Source};
 
 use VideoTime::PausedAt;
 
-use crate::{AuthArc, TaskCommand, TaskStatus};
+use crate::{AuthArc, PlayerTexture, TaskCommand, TaskStatus, TextureArc};
 use crate::export::{export, ExportFollowUp};
 use crate::player::r#impl::PlayerCommand::UpdatePreview;
 use crate::player::r#impl::VideoTime::Anchored;
@@ -96,8 +95,6 @@ enum PlayerCommand {
 }
 
 pub struct Player {
-    texture_id: TextureId,
-
     resolution: [usize; 2],
     frame_time: Duration,
     commands: SyncSender<PlayerCommand>,
@@ -113,7 +110,6 @@ pub struct Player {
 }
 
 struct PlayerStartupInfo {
-    texture_id: TextureId,
     resolution: [usize; 2],
     frame_time: Duration,
     duration: Duration,
@@ -249,10 +245,6 @@ impl Player {
         self.commands.try_send(PlayerCommand::Back15s);
     }
 
-    pub fn texture_id(&self) -> TextureId {
-        self.texture_id
-    }
-
     pub fn resolution(&self) -> [usize; 2] {
         self.resolution
     }
@@ -265,7 +257,7 @@ impl Player {
         *self.time.get()
     }
 
-    pub fn new(gui_ctx: Context, input: Input, input_path: PathBuf, starting_volume: f32) -> Self {
+    pub fn new(gui_ctx: Context, input: Input, input_path: PathBuf, starting_volume: f32, texture: TextureArc) -> Self {
         let (info_send, info_recv) = mpsc::channel();
         let (commands_send, commands_recv) = mpsc::sync_channel(20);
         let (time_updater, time) = Updatable::new(PausedAt(Duration::ZERO));
@@ -283,12 +275,12 @@ impl Player {
                 closer,
                 audio_track_changes,
                 volume,
+                texture
             );
         })
             .unwrap()
             .1;
         let PlayerStartupInfo {
-            texture_id,
             resolution,
             frame_time,
             duration,
@@ -296,7 +288,6 @@ impl Player {
         } = info_recv.recv().unwrap();
 
         Self {
-            texture_id,
             resolution,
             frame_time,
             commands: commands_send,
@@ -321,6 +312,7 @@ impl Player {
         closer: CloseReceiver,
         audio_track_changes: Receiver<usize>,
         volume: Updatable<f32>,
+        texture: TextureArc
     ) {
         let audio_stream_idx = input.streams().best(MediaType::Audio).unwrap().index();
         let mut audio_tracks = 1;
@@ -359,28 +351,10 @@ impl Player {
 
         let scaler = video_decoder
             .converter(
-                // convert to rgba pixel format and keep the same resolution
-                Pixel::RGBA,
+                // convert to rgb24 pixel format and keep the same resolution
+                Pixel::RGB24,
             )
             .unwrap_or_else(|e| todo!("could not create scaler: {e}"));
-
-        // allocate our video textures for later
-        let (texture) = {
-            let textures = gui_ctx.tex_manager();
-            let mut textures = textures.write();
-            textures.alloc(
-                "playerTexture".into(),
-                ColorImage::new(
-                    [
-                        video_decoder.width() as usize,
-                        video_decoder.height() as usize,
-                    ],
-                    Color32::BLACK,
-                )
-                    .into(),
-                TextureOptions::default(),
-            )
-        };
 
         let resampler = audio_decoder.resampler(
             Sample::F32(Type::Packed /* packed = interleaved (rodio only supports interleaved sample formats) */), audio_decoder.channel_layout(), audio_decoder.rate(),
@@ -426,7 +400,6 @@ impl Player {
             closer,
             frame: Video::empty(),
             frame_scaled: Video::empty(),
-            image: Default::default(),
             decoder: video_decoder,
             scaler,
             gui_ctx,
@@ -446,7 +419,6 @@ impl Player {
 
         info_send
             .send(PlayerStartupInfo {
-                texture_id: texture,
                 resolution: resolution.map(|x| x as usize),
                 frame_time,
                 duration,
@@ -541,22 +513,13 @@ struct VideoManager {
 
     frame: VideoFrame,
     frame_scaled: VideoFrame,
-    /// Holds the next frame to display in a format that egui will accept.
-    ///
-    /// A new allocation must unfortunately be made for every frame. To
-    /// help with this, we preallocate before the next frame to take time
-    /// out of the "wait for the next frame to be needed" phase instead of
-    /// taking up the time for actually showing the frame.
-    ///
-    /// May be empty if we haven't decoded the next frame (or we're
-    /// at the end of the video).
-    image: ColorImage,
+
     decoder: VideoDecoder,
     scaler: Scaler,
 
     gui_ctx: Context,
     time: VideoTime,
-    texture: TextureId,
+    texture: TextureArc,
     input_path: PathBuf,
 
     audio_sink: Sink,
@@ -662,17 +625,8 @@ impl VideoManager {
         self.scaler
             .run(&self.frame, &mut self.frame_scaled)
             .unwrap();
-        let delta = ImageDelta::full(
-            ffmpeg_to_egui_img(&self.frame_scaled),
-            TextureOptions::default(),
-        );
-
-        {
-            let textures = self.gui_ctx.tex_manager();
-            let mut textures = textures.write();
-            textures.set(self.texture, delta)
-        }
-        // println!("preview updated")
+        let mut tex = self.texture.lock().unwrap();
+        update_texture(&self.frame_scaled, &mut *tex);
     }
 
     fn preview_mode(&mut self, was_paused: bool) {
@@ -849,29 +803,9 @@ impl VideoManager {
 
         if ts_now >= frame_pts {
             // update the texture (if the frame isn't empty)
-            if !self.image.pixels.is_empty() {
-                // todo: measure and possibly optimize this bit
-                //          we frequently skip frames even at just 60fps on release mode
-                //          this is most likely because ColorImage::from_rgb makes an
-                //          allocation for the entire frame, every frame!
-                //          in the future, we want to try and reuse the same buffer or the
-                //          same few buffers for this purpose instead.
-                //          also, this requires getting a lock to the texture manager
-                //          which means the video decoder thread has to wait for the
-                //          ui thread sometimes. this may be a problem if the user is
-                //          interacting with the UI and forcing it to update more frequently
-                //          than the video's framerate, hogging the texture manager for itself
-                //          most of the time
-                let textures = self.gui_ctx.tex_manager();
-                let mut textures = textures.write();
-                textures.set(
-                    self.texture,
-                    ImageDelta::full(
-                        // ColorImage::default does not allocate
-                        mem::take(&mut self.image),
-                        TextureOptions::default(),
-                    ),
-                );
+            if self.frame_scaled.planes() != 0 {
+                let mut tex = self.texture.lock().unwrap();
+                update_texture(&self.frame_scaled, &mut *tex);
             }
             // decode the next frame for later
             loop {
@@ -887,7 +821,7 @@ impl VideoManager {
                 } else {
                     let packet = match self.next_packet() {
                         None => {
-                            self.image = Default::default();
+                            self.frame_scaled = VideoFrame::empty();
                             return;
                         }
                         Some(v) => v,
@@ -899,16 +833,20 @@ impl VideoManager {
             self.scaler
                 .run(&self.frame, &mut self.frame_scaled)
                 .unwrap();
-            self.image = ffmpeg_to_egui_img(&self.frame_scaled)
         }
     }
 }
 
-fn ffmpeg_to_egui_img(frame: &VideoFrame) -> ColorImage {
+fn update_texture(frame: &VideoFrame, texture: &mut PlayerTexture) {
     let size = [frame.width() as usize, frame.height() as usize];
+    texture.size = size;
+    texture.changed = true;
+    texture.bytes.clear();
+
     let data = frame.data(0);
     let total_pixels = size[0] * size[1];
-    let total_bytes = total_pixels * 4;
+    let total_bytes = total_pixels * 3;
+    texture.bytes.reserve(total_bytes);
     if total_bytes != data.len() {
         /*
         when the width of the frame isn't a multiple of 32,
@@ -924,41 +862,18 @@ fn ffmpeg_to_egui_img(frame: &VideoFrame) -> ColorImage {
         note that if no padding is added, we don't do all of this
         and just copy the buffer as-is
          */
-        let mut buf = Vec::with_capacity(total_pixels);
         let line_size = frame.stride(0);
-        let real_line_size = size[0] * 4;
+        let real_line_size = size[0] * 3;
 
         for y in 0..size[1] /* height */ {
             let real_data = &data[(y * line_size)..][..real_line_size];
-            buf.extend(
-                // before adding to our buffer, convert the bytes to pixels
-                real_data
-                    .chunks_exact(4)
-                    // on the use of premultiplied alpha, see the else block below
-                    .map(|p| Color32::from_rgba_premultiplied(p[0], p[1], p[2], p[3]))
-            );
+            texture.bytes.extend_from_slice(real_data);
         }
         // make sure no reallocations were made in debug mode
-        debug_assert!(buf.len() == total_pixels);
-        ColorImage {
-            size,
-            pixels: buf,
-        }
+        debug_assert_eq!(texture.bytes.len(), total_bytes);
+        texture.bytes.shrink_to_fit();
     } else {
-        /*
-        it is technically incorrect to use from_rgba_premultiplied, since
-        ffmpeg always gives us unmultiplied alpha, however assuming
-        premupltiplied alpha means that the conversion from pixels to
-        bytes is essentially free (most likely compiled to no-op).
-        (egui only wants to work with premultiplied alpha)
-
-        this will *probably* create weird results with transparent videos
-        but who in the world even uses transparent videos anyway?
-         */
-        ColorImage::from_rgba_premultiplied(
-            size,
-            data,
-        )
+        texture.bytes.extend_from_slice(data);
     }
 }
 
