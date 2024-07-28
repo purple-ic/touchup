@@ -69,7 +69,7 @@ default = ["youtube", "update"]
 #   if disabled, the upload to youtube button won't appear at all.
 #   depends on the `async` feature
 youtube = ["async", "dep:yup-oauth2", "dep:serde_json", "tokio/fs", "hyper", "tokio-util/io"]
-update = ["async", "hyper", "dep:tempfile", "dep:zip", "dep:self-replace"]
+update = ["async", "hyper", "dep:tempfile", "dep:zip", "dep:self-replace", "tokio/fs", "dep:serde_json"]
 # enables the async runtime
 #   the async runtime is a single thread separate from the UI thread
 #   so all async tasks run on a single thread. this is fine since
