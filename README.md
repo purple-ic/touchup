@@ -22,17 +22,48 @@ whatever you want.
 
 ## Installation
 
-TODO(launcher) or [install through cargo](#cargo-install)
+TouchUp doesn't come with an installer. We simply distribute the executable and necessary files
+in a zip file. Those zip files can be found [here](https://github.com/purple-ic/touchup/releases/).
+
+Releases come in two different flavors:
+
+- Default: comes with the usual features (i.e. self-updating and YouTube support)
+- Mini: only includes the base functionality of TouchUp
+
+If you'd like to further configure the included [features](#feature-flags) or
+you'd like to statically link to FFmpeg instead of doing so dynamically, you
+can [compile TouchUp yourself](#cargo-install)
+
+### Windows
+
+Windows releases come with the executable (`touchup.exe`) and all necessary FFmpeg libraries.
+TouchUp should just work if you launch it through the executable.
+
+If you'd like, you can manually create a shortcut. You can also have TouchUp launch
+automatically on startup by adding the shortcut to the folder that opens when you
+press `Win + R` and type `shell:startup`.
+
+### Linux
+
+The Linux release doesn't come with any FFmpeg libraries and links to them dynamically.
+Your distribution likely comes with FFmpeg already, but if it doesn't, it shouldn't be
+too difficult to get it installed.
+
+Header files are not required unless you're compiling TouchUp from source
 
 ## cargo install
 
-TouchUp can be installed through cargo using `cargo install touchup`. Note that
-this requires you have a [custom FFmpeg installation](https://github.com/zmwangx/rust-ffmpeg/wiki/Notes-on-building).
+TouchUp can be built & installed through cargo
+using `cargo install --git https://github.com/purple-ic/touchup --tag ${version}`
+(replace `${version}` with the desired version of TouchUp. remove the `--tag ${version}` part to build from the latest
+commit).
+Note that this requires you have
+a [custom FFmpeg installation](https://github.com/zmwangx/rust-ffmpeg/wiki/Notes-on-building).
 
 This method will also allow you to [specify custom feature flags](#feature-flags).
 
-Alternatively, on Linux, you can build FFmpeg together with TouchUp using
-`cargo install touchup -F ffmpeg_next/build`. Note that you'll have to manually
+Alternatively, on Linux, you can build FFmpeg together with TouchUp
+by adding `-F ffmpeg_next/build`. Note that you'll have to manually
 specify the built libraries; building without libraries will result in an FFmpeg
 build that can't process any usual codec. The build configuration options can be found
 [here](https://github.com/zmwangx/rust-ffmpeg/blob/1922ed055f96c368628e5b543ec4c59ddfa01ff4/Cargo.toml#L32-L88).
@@ -55,3 +86,13 @@ Default features (such as `youtube`) can be disabled by also passing `--no-defau
   sure you receive both important and unimportant updates. (the app *always* asks you before updating)
 - `async` (required for `youtube` & `update`): spins up an async runtime. This may be somewhat taxing
   on your device and might decrease compilation time, but it'll most likely be fine.
+
+## License
+
+TouchUp code is under the [MIT license](./LICENSE), however the crates used to create the application
+use different licenses. Note that used crates vary depending on the operating system
+and [enabled features](#feature-flags).
+
+For any official TouchUp distribution where the FFmpeg libraries are present, they are licensed under the
+LGPLv2.1, though TouchUp usually links to FFmpeg dynamically and the user may change the libraries, including
+to a version which isn't licensed under the LGPLv2.1
