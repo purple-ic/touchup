@@ -18,6 +18,8 @@ use egui::{Align, Color32, Context, Id, ImageData, Label, Layout, ProgressBar, R
 use egui::epaint::mutex::RwLock;
 use egui::epaint::TextureManager;
 use egui::panel::TopBottomSide;
+use http_body_util::combinators::BoxBody;
+use hyper::body::Bytes;
 use replace_with::replace_with;
 use serde::{Deserialize, Serialize};
 
@@ -42,7 +44,7 @@ hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>
 #[cfg(feature = "hyper")]
 pub type HttpsClient = hyper_util::client::legacy::Client<
     HttpsConnector,
-    http_body_util::Full<std::io::Cursor<Vec<u8>>>,
+    BoxBody<Bytes, std::io::Error>,
 >;
 
 #[cfg(feature = "hyper")]

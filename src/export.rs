@@ -1,6 +1,5 @@
 use std::fmt::{Debug, Formatter};
 use std::fs;
-use std::fs::File;
 use std::io::{ErrorKind, Read};
 use std::ops::{ControlFlow, Deref, DerefMut};
 use std::ops::ControlFlow::{Break, Continue};
@@ -72,13 +71,13 @@ impl ExportFollowUp {
                     stage: TaskStage::YtAwaitingInfo,
                     progress: f32::NEG_INFINITY,
                 }).unwrap();
-                let mut file = File::open(&output_file).unwrap();
                 let should_delete = ctx
                     .data_mut(|d| d.get_persisted(Id::new("deleteAfterUpload")))
                     .unwrap_or(true);
                 let ctx = Context::clone(&ctx);
 
                 spawn_async(async move {
+                    let mut file = tokio::fs::File::open(&output_file).await.unwrap();
                     let auth = auth.read();
                     let yt = match &auth.youtube {
                         None => {

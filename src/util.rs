@@ -1,5 +1,6 @@
 use std::{iter, mem, thread};
 use std::cmp::Ordering;
+use std::convert::Infallible;
 use std::ffi::c_int;
 use std::sync::{Arc, mpsc, Once};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError};
@@ -331,4 +332,13 @@ impl Drop for AsyncCanceler {
             }
         }
     }
+}
+
+#[macro_export]
+macro_rules! infallible_unreachable {
+    ($inf:expr) => {{
+        // make sure $inf is actually Infallible
+        let v: ::core::convert::Infallible = $inf;
+        unreachable!("infallible cannot exist at runtime")
+    }};
 }

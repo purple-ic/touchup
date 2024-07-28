@@ -1,11 +1,11 @@
 #![cfg(feature = "youtube")]
 
-use std::{fs, mem};
+use std::{fs, io, iter, mem};
 use std::error::Error;
+use std::fmt::Write;
 use std::fs::File;
 use std::future::Future;
 use std::io::{Cursor, ErrorKind, Seek, SeekFrom};
-use std::io::Write;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, mpsc};
@@ -14,17 +14,25 @@ use std::thread::Scope;
 use eframe::emath::{Align, Vec2};
 use egui::{Button, Color32, Context, CursorIcon, Id, Image, ImageSource, include_image, Label, Layout, OpenUrl, RichText, Sense, TextBuffer, TextEdit, TextStyle, Ui, Widget};
 use egui::util::IdTypeMap;
-use http_body_util::{BodyExt, Full};
-use hyper::body::Body;
+use futures::Stream;
+use futures_util::StreamExt;
+use http_body_util::{BodyExt, BodyStream, Full, StreamBody};
+use http_body_util::combinators::{BoxBody, WithTrailers};
+use hyper::body::{Body, Bytes, Frame};
 use hyper::Request;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tokio::io::AsyncSeekExt;
 use tokio::sync::oneshot;
+use tokio::task::spawn_blocking;
+use tokio_util::bytes::{BufMut, BytesMut};
+use tokio_util::codec::FramedRead;
+use tokio_util::io::ReaderStream;
 use yup_oauth2::{ConsoleApplicationSecret, InstalledFlowAuthenticator, InstalledFlowReturnMethod};
 use yup_oauth2::authenticator::{Authenticator, DefaultHyperClient};
 use yup_oauth2::authenticator_delegate::InstalledFlowDelegate;
 
-use crate::{AuthArc, https_client, HttpsClient, HttpsConnector, spawn_async, storage, Task};
+use crate::{AuthArc, https_client, HttpsClient, HttpsConnector, infallible_unreachable, spawn_async, storage, Task};
 use crate::util::{AnyExt, Updatable};
 
 pub enum YtInfo {
@@ -296,7 +304,7 @@ pub fn yt_log_out(yt: &YtAuth) {
 
         let req = Request::post(format!("https://oauth2.googleapis.com/revoke?token={token}"))
             // empty vec
-            .body(Full::default())
+            .body(BoxBody::new(http_body_util::Empty::new().map_err(|x| infallible_unreachable!(x))))
             .unwrap();
         client.request(req).await.unwrap_or_else(|_| todo!());
     });
@@ -384,28 +392,28 @@ macro_rules! boundary {
 // todo: should this maybe be randomly generated per upload? idk
 const BOUNDARY: &str = boundary!();
 
-pub async fn yt_upload(client: &HttpsClient, file: &mut File, auth: &YtAuth, title: &str, description: &str, vis: YtVisibility) {
-    let file_len = file.seek(SeekFrom::End(0)).unwrap();
-    file.seek(SeekFrom::Start(0)).unwrap();
+pub async fn yt_upload(client: &HttpsClient, file: &mut tokio::fs::File, auth: &YtAuth, title: &str, description: &str, vis: YtVisibility) {
+    let file_len = file.seek(SeekFrom::End(0)).await.unwrap();
+    file.seek(SeekFrom::Start(0)).await.unwrap();
 
     // these docs are for google drive but the same multipart method applies to the youtube api
     // https://developers.google.com/drive/api/guides/manage-uploads#multipart
 
-    let mut body_len = file_len as usize /* the vec will 100% exceed the file_len capacity, but starting at file_len is already good as it'll prevent a LOT of reallocations anyway */;
+    let body_len = dbg!(file_len) as usize /* the vec will 100% exceed the file_len capacity, but starting at file_len is already good as it'll prevent a LOT of reallocations anyway */;
 
     let token = auth.token(&[UPLOAD_SCOPE]).await.unwrap();
     let token = token.token()
         .expect("successful token requests with upload scope must always return access tokens");
 
-    loop {
-        let mut body = Vec::with_capacity(body_len);
+    // todo: use spawn_blocking here
+    let mut body_start = BytesMut::new();
 
-        // part 1: metadata -- the video snippet in JSON form
-        writeln!(body, "--{BOUNDARY}").unwrap();
-        writeln!(body, "Content-Type: application/json; charset=UTF-8").unwrap();
-        writeln!(body).unwrap();
+    // part 1: metadata -- the video snippet in JSON form
+    writeln!(body_start, "--{BOUNDARY}").unwrap();
+    writeln!(body_start, "Content-Type: application/json; charset=UTF-8").unwrap();
+    writeln!(body_start).unwrap();
 
-        let snippet = json!({
+    let snippet = json!({
                 "snippet": {
                     "title": title,
                     "description": description,
@@ -414,29 +422,39 @@ pub async fn yt_upload(client: &HttpsClient, file: &mut File, auth: &YtAuth, tit
                     "privacyStatus": vis.api_str(),
                 }
             });
-        serde_json::to_writer(&mut body, &snippet).unwrap();
-        writeln!(body).unwrap();
-        // part 2: media -- the raw bytes of the video
-        writeln!(body, "--{BOUNDARY}").unwrap();
-        writeln!(body, "Content-Type: video/*").unwrap();
-        writeln!(body, "Content-Length: {file_len}").unwrap();
-        writeln!(body).unwrap();
+    body_start.put_slice(serde_json::to_string(&snippet).unwrap().as_bytes());
+    writeln!(body_start).unwrap();
+    // part 2: media -- the raw bytes of the video
+    writeln!(body_start, "--{BOUNDARY}").unwrap();
+    writeln!(body_start, "Content-Type: video/*").unwrap();
+    writeln!(body_start, "Content-Length: {file_len}").unwrap();
+    writeln!(body_start).unwrap();
+    let body_start = Bytes::from(body_start);
+    let body_end = Bytes::from_static(concat!("\n\n--", boundary!(), "--").as_bytes());
 
-        // wrap it up
-        writeln!(body, "--{BOUNDARY}--").unwrap();
-        body_len = body.len();
+    loop {
+        let body_start
+            = futures::stream::iter(iter::once(Ok(Frame::data(Bytes::clone(&body_start)))));
+        let body_end
+            = futures::stream::iter(iter::once(Ok(Frame::data(Bytes::clone(&body_end)))));
 
         let request = Request::post("https://www.googleapis.com/upload/youtube/v3/videos?uploadType=multipart&part=status,snippet")
             .header("Authorization", format!("Bearer {token}"))
             .header("Content-Type", concat!("multipart/related; boundary=", boundary!()))
-            .body(Full::new(Cursor::new(body)))
+            .body(
+                BoxBody::new(StreamBody::new(body_start
+                    .chain(ReaderStream::new(file.try_clone().await.unwrap()).map(|x| x.map(Frame::data)))
+                    .chain(body_end)))
+            )
             .unwrap();
 
+        // todo: handle quota errors correctly? maybe? we probably won't need to in production anyway so
         let out = client.request(request).await.unwrap();
         let status = out.status();
         if status.is_success() {
             break
         } else if status.is_server_error() || status.is_client_error() {
+            file.seek(SeekFrom::Start(0)).await.unwrap();
             continue // retry for error codes 5xx and 4xx
         } else {
             let body = out.into_body().collect().await.unwrap().to_bytes();

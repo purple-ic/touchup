@@ -17,6 +17,7 @@ egui_extras = { version = "0.28.1", default-features = false, features = ["svg",
 
 ffmpeg-next = { version = "7.0.2", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
 rodio = { version = "0.19.0", default-features = false }
+futures = { version = "0.3.30", optional = true }
 futures-util = { version = "0.3.30", optional = true }
 
 # file dialog library
@@ -33,6 +34,7 @@ yup-oauth2 = { version = "11.0.0", optional = true }
 
 serde_json = { version = "1.0.120", optional = true }
 tokio = { version = "1.38.1", features = ["rt"], default-features = false, optional = true }
+tokio-util = { version = "0.7.11", default-features = false, optional = true }
 serde = { version = "1.0.203", features = ["derive"] }
 
 # `hyper` feature
@@ -66,10 +68,10 @@ default = ["youtube", "update"]
 # enables youtube uploading
 #   if disabled, the upload to youtube button won't appear at all.
 #   depends on the `async` feature
-youtube = ["async", "dep:yup-oauth2", "dep:serde_json", "tokio/fs", "hyper"]
+youtube = ["async", "dep:yup-oauth2", "dep:serde_json", "tokio/fs", "hyper", "tokio-util/io"]
 update = ["async", "hyper", "dep:tempfile", "dep:zip", "dep:self-replace"]
 # enables the async runtime
 #   the async runtime is a single thread separate from the UI thread
 #   so all async tasks run on a single thread. this is fine since
 #   we only use async for uploads
-async = ["dep:tokio", "dep:futures-util"]
+async = ["dep:tokio", "dep:futures-util", "dep:futures"]
