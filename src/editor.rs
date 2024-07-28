@@ -19,7 +19,7 @@ use crate::util::Updatable;
 
 pub struct Editor {
     player: PlayerUI,
-    current_audio_track: usize,
+    current_audio_track: Option<usize>,
     trim: RangeInclusive<f32>,
     path: PathBuf,
 }
@@ -38,7 +38,11 @@ impl Editor {
 
         Some(Editor {
             trim: (0.)..=player.duration().as_secs_f32(),
-            current_audio_track: 0,
+            current_audio_track: if player.nb_audio_tracks() > 0 {
+                Some(0)
+            } else {
+                None
+            },
             player,
             path,
         })
@@ -71,29 +75,51 @@ impl Editor {
         let old_audio_track = self.current_audio_track;
 
         // only show the audio track selector when there is more than one
-        if self.player.nb_audio_tracks() > 1 {
+        let nb_audio_tracks = self.player.nb_audio_tracks();
+        if nb_audio_tracks > 1 {
             ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
                 ui.label("Audio track");
-                ui.columns(self.player.nb_audio_tracks(), |columns| {
+                ui.columns(self.player.nb_audio_tracks() + 1, |columns| {
+                    let mut columns = columns.iter_mut();
+                    {
+                        let ui = columns.next().unwrap();
+                        ui.radio_value(
+                            &mut self.current_audio_track,
+                            None,
+                            "None",
+                        );
+                    }
                     // let width_per_column = total_width / columns.len() as f32;
-                    for (i, ui) in columns.iter_mut().enumerate() {
+                    for (i, ui) in columns.enumerate() {
                         ui.with_layout(Layout::top_down(Align::Center), |ui| {
                             // ui.set_max_width(width_per_column);
                             ui.radio_value(
                                 &mut self.current_audio_track,
-                                i,
+                                Some(i),
                                 (i + 1/* make the track numbers one-indexed */).to_string(),
                             );
                         });
                     }
                 })
             });
+            ui.add_space(15.);
+        } else if nb_audio_tracks == 1 {
+            let mut enable_audio = self.current_audio_track.is_some();
 
-            if old_audio_track != self.current_audio_track {
-                self.player.set_audio_track(self.current_audio_track)
-            }
+            ui.with_layout(Layout::top_down(Align::Center), |ui| {
+                ui.checkbox(&mut enable_audio, "Enable audio")
+            });
+            self.current_audio_track = if enable_audio {
+                Some(0)
+            } else {
+                None
+            };
             ui.add_space(15.);
         }
+        if old_audio_track != self.current_audio_track {
+            self.player.set_audio_track(self.current_audio_track)
+        }
+
         ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
             ui.add_space(64.);
 

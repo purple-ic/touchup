@@ -316,7 +316,7 @@ pub fn export(
     input: &mut Input,
     trim: (f32, f32),
     video_stream_idx: usize,
-    audio_stream_idx: usize,
+    audio_stream_idx: Option<usize>,
     status: SyncSender<TaskStatus>,
     input_path: PathBuf,
     auth: AuthArc,
@@ -344,7 +344,10 @@ pub fn export(
     let video_dur = video.end - video.start;
 
     let mut video = Some(video);
-    let mut audio = Some(audio_transcoder(input, &mut output, audio_stream_idx, trim));
+    let mut audio =
+        audio_stream_idx.map(|audio_stream_idx| {
+            audio_transcoder(input, &mut output, audio_stream_idx, trim)
+        });
 
     output.write_header().unwrap();
 
@@ -355,7 +358,8 @@ pub fn export(
     };
 
     let lock = TASK_LOCK.lock().unwrap();
-    while (video.is_some() || audio.is_some()) && packet.read(input).is_ok() {
+
+    while (video.is_some() || (audio.is_some() && audio_stream_idx.is_some())) && packet.read(input).is_ok() {
         let packet_pts = packet.pts();
 
         let stream = packet.stream();
@@ -363,8 +367,8 @@ pub fn export(
             if let Some(transcoder) = &mut video {
                 match status.try_send(TaskStatus {
                     stage: task_stage,
-                    progress: (packet_pts.unwrap_or(video_start) - video_start) as f32
-                        / video_dur as f32,
+                    progress: ((packet_pts.unwrap_or(video_start) - video_start) as f32
+                        / video_dur as f32).at_most(0.99),
                 }) {
                     Ok(()) => {}
                     Err(TrySendError::Full(_)) => {
@@ -385,7 +389,7 @@ pub fn export(
                     video = None;
                 }
             }
-        } else if stream == audio_stream_idx {
+        } else if Some(stream) == audio_stream_idx {
             if let Some(transcoder) = &mut audio {
                 if transcoder
                     .receive_packet(&mut output, &mut packet)

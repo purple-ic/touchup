@@ -35,7 +35,7 @@ impl PlayerUI {
     pub fn export(
         &self,
         trim: (f32, f32),
-        audio_track: usize,
+        audio_track: Option<usize>,
         status: SyncSender<TaskStatus>,
         path: PathBuf,
         id: u32,
@@ -86,7 +86,7 @@ impl PlayerUI {
         self.player.time().now()
     }
 
-    pub fn set_audio_track(&mut self, idx: usize) {
+    pub fn set_audio_track(&mut self, idx: Option<usize>) {
         self.player.set_audio_track(idx)
     }
 

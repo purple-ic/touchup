@@ -82,7 +82,7 @@ enum PlayerCommand {
     UpdatePreview(Duration),
     Export {
         trim: (f32, f32),
-        audio_track: usize,
+        audio_track: Option<usize>,
         status: SyncSender<TaskStatus>,
         path: PathBuf,
         id: u32,
@@ -103,7 +103,7 @@ pub struct Player {
     duration: Duration,
     #[allow(unused)] // it is actually used for dropping behaviour
     threads: OwnedThreads,
-    change_audio_track: Sender<usize>,
+    change_audio_track: Sender<Option<usize>>,
     audio_tracks: usize,
     preview_mode: bool,
     change_volume: Sender<f32>,
@@ -154,7 +154,7 @@ impl Player {
     pub fn begin_export(
         &self,
         trim: (f32, f32),
-        audio_track: usize,
+        audio_track: Option<usize>,
         status: SyncSender<TaskStatus>,
         path: PathBuf,
         id: u32,
@@ -197,7 +197,7 @@ impl Player {
         }
     }
 
-    pub fn set_audio_track(&self, idx: usize) {
+    pub fn set_audio_track(&self, idx: Option<usize>) {
         self.change_audio_track.send(idx).unwrap()
     }
 
@@ -310,23 +310,27 @@ impl Player {
         commands_recv: Receiver<PlayerCommand>,
         time_updater: Sender<VideoTime>,
         closer: CloseReceiver,
-        audio_track_changes: Receiver<usize>,
+        audio_track_changes: Receiver<Option<usize>>,
         volume: Updatable<f32>,
         texture: TextureArc
     ) {
-        let audio_stream_idx = input.streams().best(MediaType::Audio).unwrap().index();
-        let mut audio_tracks = 1;
+        let audio_stream_idx = input.streams().find(is_audio).map(|stream| stream.index());
+        let mut audio_tracks = if audio_stream_idx.is_some() {
+            1
+        } else {
+            0
+        };
 
         for mut stream in input
             .streams_mut()
-            .filter(|stream| is_audio(&stream) && stream.index() != audio_stream_idx)
+            .filter(|stream| is_audio(&stream) && Some(stream.index()) != audio_stream_idx)
         {
             audio_tracks += 1;
             set_stream_discard(&mut stream, AVDISCARD_ALL)
         }
 
         let video_stream = input.streams().best(MediaType::Video).unwrap();
-        let audio_stream = input.stream(audio_stream_idx).unwrap();
+        let audio_stream = audio_stream_idx.map(|idx| input.stream(idx).unwrap());
 
         let video_stream_idx = video_stream.index();
 
@@ -345,7 +349,7 @@ impl Player {
         };
         let video_decoder = make_video_decoder();
 
-        let audio_decoder = new_audio_decoder(&audio_stream);
+        let audio_decoder = audio_stream.as_ref().map(|audio_stream| new_audio_decoder(audio_stream));
 
         let resolution = [video_decoder.width(), video_decoder.height()];
 
@@ -356,9 +360,9 @@ impl Player {
             )
             .unwrap_or_else(|e| todo!("could not create scaler: {e}"));
 
-        let resampler = audio_decoder.resampler(
+        let resampler = audio_decoder.as_ref().map(|audio_decoder| audio_decoder.resampler(
             Sample::F32(Type::Packed /* packed = interleaved (rodio only supports interleaved sample formats) */), audio_decoder.channel_layout(), audio_decoder.rate(),
-        ).unwrap_or_else(|e| todo!("could not create resampler: {e}"));
+        ).unwrap_or_else(|e| todo!("could not create resampler: {e}")));
 
         let avg_frame_rate = video_stream.avg_frame_rate();
         let frame_time = Duration::from_secs_f64(avg_frame_rate.invert().value_f64());
@@ -656,7 +660,7 @@ impl VideoManager {
     fn export(
         &self,
         trim: (f32, f32),
-        audio_track: usize,
+        audio_track: Option<usize>,
         status: SyncSender<TaskStatus>,
         path: PathBuf,
         id: u32,
@@ -674,13 +678,16 @@ impl VideoManager {
             .name(format!("taskExport{id}"))
             .spawn(move || {
                 let mut input = input_mutex.lock().unwrap();
-                let audio_stream_idx = input
-                    .0
-                    .streams()
-                    .filter(is_audio)
-                    .nth(audio_track)
-                    .unwrap()
-                    .index();
+                let audio_stream_idx =
+                    audio_track.map(|audio_track|
+                    input
+                        .0
+                        .streams()
+                        .filter(is_audio)
+                        .nth(audio_track)
+                        .unwrap()
+                        .index()
+                    );
                 export(
                     ctx,
                     &mut input.0,
@@ -884,7 +891,7 @@ fn update_texture(frame: &VideoFrame, texture: &mut PlayerTexture) {
 }
 
 struct AudioManager {
-    stream_idx: usize,
+    stream_idx: Option<usize>,
     video_stream_idx: usize,
 
     input_mutex: Arc<Mutex<(Input, LastTs)>>,
@@ -892,29 +899,33 @@ struct AudioManager {
     video_send: SyncSender<Packet>,
     flush_requests: Receiver<()>,
     closer: CloseReceiver,
-    audio_track_changes: Receiver<usize>,
+    audio_track_changes: Receiver<Option<usize>>,
 
     frame: AudioFrame,
     frame_resampled: AudioFrame,
     sample_idx: usize,
 
-    decoder: AudioDecoder,
-    resampler: Resampler,
+    decoder: Option<AudioDecoder>,
+    resampler: Option<Resampler>,
 
     volume: Updatable<f32>,
 }
 
 impl AudioManager {
     fn next_packet(&mut self) -> Option<Packet> {
-        next_packet(
-            |stream| stream.index() == self.stream_idx,
-            is_video(self.video_stream_idx),
-            // self.stream_idx,
-            // self.video_stream_idx,
-            &mut self.audio_recv,
-            &mut self.video_send,
-            &self.input_mutex,
-        )
+        if let Some(stream_idx) = self.stream_idx {
+            next_packet(
+                |stream| stream.index() == stream_idx,
+                is_video(self.video_stream_idx),
+                // self.stream_idx,
+                // self.video_stream_idx,
+                &mut self.audio_recv,
+                &mut self.video_send,
+                &self.input_mutex,
+            )
+        } else {
+            None
+        }
     }
 }
 
@@ -922,6 +933,7 @@ impl Iterator for AudioManager {
     type Item = f32;
 
     fn next(&mut self) -> Option<Self::Item> {
+
         // this is not strictly required since the audio stream will most likely be
         //  dropped by the video thread, stopping the audio thread. but just in case
         //  we'll end our iterator if we have to close
@@ -929,7 +941,9 @@ impl Iterator for AudioManager {
             return None;
         }
         if let Ok(()) = self.flush_requests.try_recv() {
-            self.decoder.flush();
+            if let Some(decoder) = &mut self.decoder {
+                decoder.flush();
+            }
         }
 
         // .samples() returns the number of samples *per channel*. so we need to multiply it by the number of channels
@@ -938,27 +952,38 @@ impl Iterator for AudioManager {
             // but before decoding a new frame, check if we have to switch tracks
             if let Some(new_track) = self.audio_track_changes.try_iter().last() {
                 let mut input = self.input_mutex.lock().unwrap();
-                let new_track_idx = input
+                let new_track_idx = new_track.map(|new_track| input
                     .0
                     .streams()
                     .filter(is_audio)
                     .nth(new_track)
                     .unwrap()
-                    .index();
+                    .index());
                 let old_track = self.stream_idx;
                 if new_track_idx != old_track {
                     self.stream_idx = new_track_idx;
 
-                    set_stream_discard(&mut input.0.stream_mut(old_track).unwrap(), AVDISCARD_ALL);
-                    let mut new_track = input.0.stream_mut(new_track_idx).unwrap();
-                    set_stream_discard(&mut new_track, AVDISCARD_NONE);
+                    if let Some(old_track) = old_track {
+                        set_stream_discard(&mut input.0.stream_mut(old_track).unwrap(), AVDISCARD_ALL);
+                    }
+                    if let Some(new_track_idx) = new_track_idx {
+                        let mut new_track = input.0.stream_mut(new_track_idx).unwrap();
+                        set_stream_discard(&mut new_track, AVDISCARD_NONE);
 
-                    // create new decoder and resampler
-                    self.decoder = new_audio_decoder(&new_track);
-                    self.resampler = self.decoder.resampler(
-                        Sample::F32(Type::Packed /* packed = interleaved (rodio only supports interleaved sample formats) */), self.decoder.channel_layout(), self.decoder.rate(),
-                    ).unwrap_or_else(|e| todo!("could not create resampler: {e}"))
+                        // create new decoder and resampler
+                        let decoder = new_audio_decoder(&new_track);
+                        self.resampler = Some(decoder.resampler(
+                            Sample::F32(Type::Packed /* packed = interleaved (rodio only supports interleaved sample formats) */), decoder.channel_layout(), decoder.rate(),
+                        ).unwrap_or_else(|e| todo!("could not create resampler: {e}")));
+                        self.decoder = Some(decoder);
+                    } else {
+                        self.resampler = None;
+                        self.decoder = None;
+                    }
                 }
+            }
+            if self.stream_idx.is_none() {
+                return Some(0.);
             }
             loop {
                 let packet = match self.next_packet() {
@@ -966,21 +991,26 @@ impl Iterator for AudioManager {
                     Some(v) => v,
                 };
 
-                if packet.stream() != self.stream_idx {
+                if Some(packet.stream()) != self.stream_idx {
                     continue;
                 }
 
-                self.decoder.send_packet(&packet);
-                if self.decoder.receive_frame(&mut self.frame).is_ok() {
+                let decoder = self.decoder.as_mut().unwrap();
+                decoder.send_packet(&packet);
+                if decoder.receive_frame(&mut self.frame).is_ok() {
                     break;
                 }
             }
 
             // resample our newly decoded frame
             self.resampler
+                .as_mut()
+                .unwrap()
                 .run(&self.frame, &mut self.frame_resampled)
                 .unwrap();
             self.sample_idx = 0;
+        } else if self.stream_idx.is_none() {
+            return Some(0.)
         }
         // .plane::<f32>(0) is nice because it returns the floats instead of bytes, but
         //      we can't use it because the array it returns bases its size off of the
@@ -1004,11 +1034,11 @@ impl Source for AudioManager {
     }
 
     fn channels(&self) -> u16 {
-        self.decoder.channels()
+        self.decoder.as_ref().map(|decoder| decoder.channels()).unwrap_or(1)
     }
 
     fn sample_rate(&self) -> u32 {
-        self.decoder.rate()
+        self.decoder.as_ref().map(|decoder| decoder.rate()).unwrap_or(48000)
     }
 
     fn total_duration(&self) -> Option<Duration> {
