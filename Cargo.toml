@@ -57,11 +57,6 @@ features = ["send_guard"]
 [profile.dev]
 opt-level = 2
 
-[profile.fast-build]
-# todo: maybe `cargo check` is enough?
-inherits = "dev"
-opt-level = 1
-
 [features]
 hyper = ["dep:hyper", "dep:hyper-util", "dep:hyper-rustls", "dep:http-body-util", "dep:rustls"]
 default = ["youtube", "update"]

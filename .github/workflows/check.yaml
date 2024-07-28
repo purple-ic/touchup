@@ -1,4 +1,4 @@
-name: Test
+name: Check compilation
 
 on: push
 env:
@@ -37,6 +37,6 @@ jobs:
           sudo apt-get install -y clang libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev pkg-config
           echo "---- Rodio dependencies"
           sudo apt-get install -y libasound2-dev
-      - name: Build TouchUp
+      - name: Check TouchUp compilation
         run: |
-          cargo build --profile fast-build --no-default-features ${{ matrix.yt }} ${{ matrix.upd }}
+          cargo check --no-default-features ${{ matrix.yt }} ${{ matrix.upd }}
