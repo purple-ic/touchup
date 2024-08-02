@@ -373,7 +373,7 @@ impl YtAuthScreen {
                             auth.write().youtube = Some(v);
                         }
                         Err(YtAuthErr::Outdated) => {
-                            msg.show_waiting("TouchUp must be updated to use YouTube-related features.\nThe YouTube API has made breaking changes and the current version of TouchUp can no longer interact with it.").await;
+                            msg.show_async("TouchUp must be updated to use YouTube-related features.\nThe YouTube API has made breaking changes and the current version of TouchUp can no longer interact with it.").await;
                         }
                     }
                 }
@@ -481,6 +481,7 @@ pub async fn yt_upload(
             .part(
                 "video",
                 multipart::Part::stream(f)
+                    // todo: don't provide the file name if we don't know it yet (atm we provide "<unknown>" in that case)
                     .file_name(file_name.clone())
                     .headers(header_map! {
                         "content-type": "video/*",

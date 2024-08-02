@@ -1,8 +1,13 @@
+#![feature(error_generic_member_access)]
+
 extern crate ffmpeg_next as ffmpeg;
 
+use std::backtrace::{Backtrace, BacktraceStatus};
 use std::borrow::Cow;
+use std::error::{Error, request_ref};
 use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
+use std::io::Stdout;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Barrier, mpsc, Mutex, OnceLock};
@@ -20,7 +25,7 @@ use egui::{Align, Color32, Context, Id, ImageData, Label, Layout, ProgressBar, R
 use egui::epaint::mutex::RwLock;
 use egui::epaint::TextureManager;
 use egui::panel::TopBottomSide;
-use log::{info, LevelFilter};
+use log::{error, info, LevelFilter};
 use replace_with::replace_with;
 use rfd::{MessageButtons, MessageLevel};
 use serde::{Deserialize, Serialize};
@@ -576,7 +581,7 @@ impl eframe::App for TouchUp {
                         Screen::Select(select) => match select.draw(ui, frame, &self.auth) {
                             SelectScreenOut::Stay => {}
                             SelectScreenOut::Edit(to_open) => {
-                                match Editor::new(ctx, to_open, frame, Arc::clone(&self.texture)) {
+                                match Editor::new(ctx, self.message_manager.cheap_clone(), to_open, frame, Arc::clone(&self.texture)) {
                                     None => {}
                                     Some(screen) => {
                                         self.screen = Screen::Edit(screen);
@@ -698,11 +703,69 @@ impl MessageManager {
     }
 
     #[cfg(feature = "async")]
-    pub async fn show_waiting(&self, message: impl Into<String>) {
+    pub async fn show_async(&self, message: impl Into<String>) {
         let self2 = self.cheap_clone();
         let msg = message.into();
         tokio::task::spawn_blocking(move || {
             self2.show_blocking(msg);
         }).await.unwrap();
+    }
+
+    fn _handle_err<E: Error>(&self, stage: &str, err: E) {
+        let backtrace = request_ref::<Backtrace>(&err)
+            .filter(|b| matches!(b.status(), BacktraceStatus::Captured));
+        if let Some(backtrace) = backtrace {
+            error!("error at stage `{stage}`: {err}\n{}", backtrace)
+        } else {
+            error!("(no backtrace) error at stage `{stage}`: {err}")
+        }
+        self.show_blocking(
+            format!("An error occurred during {stage}:\n{err}")
+        );
+    }
+
+    pub fn handle_err<E: Error, R>(&self, stage: &str, func: impl FnOnce() -> Result<R, E>) -> Option<R> {
+        match func() {
+            Ok(v) => Some(v),
+            Err(err) => {
+                self._handle_err(stage, err);
+                None
+            }
+        }
+    }
+
+    // pub async fn handle_blocking_err_async<E : Error + 'static, R : Send + 'static>(&self, stage: &'static str, func: impl 'static + Send + FnOnce() -> Result<R, E>) -> Option<R> {
+    //     let self2 = self.cheap_clone();
+    //     spawn_blocking(move || {
+    //         self2.handle_err(stage, func)
+    //     }).await.expect("_handle_err should not panic")
+    // }
+
+    #[cfg(feature = "async")]
+    pub async fn handle_err_async<E: Error + Send + 'static, R>(&self, stage: impl AsRef<str> + Send + 'static, future: impl Future<Output=Result<R, E>>) -> Option<R> {
+        match future.await {
+            Ok(v) => Some(v),
+            Err(err) => {
+                let self2 = self.cheap_clone();
+                tokio::task::spawn_blocking(move || {
+                    let stage = stage;
+                    self2._handle_err(stage.as_ref(), err);
+                }).await.expect("_handle_err should not panic");
+                None
+            }
+        }
+        // let value = future.await;
+        // let self2 = self.cheap_clone();
+        // spawn_blocking(move || {
+        //     self2._handle_err(stage, value)
+        // }).await.expect("_handle_err should not panic")
+    }
+
+    #[cfg(feature = "async")]
+    pub fn handle_err_spawn<E: Error + Send + 'static, R: Send + 'static>(&self, stage: impl AsRef<str> + Send + 'static, future: impl Future<Output=Result<R, E>> + Send + 'static) -> tokio::task::JoinHandle<Option<R>> {
+        let msg = self.cheap_clone();
+        spawn_async(async move {
+            msg.handle_err_async(stage, future).await
+        })
     }
 }

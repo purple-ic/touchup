@@ -1,5 +1,6 @@
+use std::{error, fs, io};
+use std::backtrace::Backtrace;
 use std::fmt::{Debug, Formatter};
-use std::fs;
 use std::io::{ErrorKind, Read};
 use std::ops::{ControlFlow, Deref, DerefMut};
 use std::ops::ControlFlow::{Break, Continue};
@@ -16,12 +17,16 @@ use ffmpeg::format::context::{Input, Output};
 use ffmpeg::format::output;
 use ffmpeg::frame::{Audio as AudioFrame, Video as VideoFrame};
 use ffmpeg::sys::AV_TIME_BASE_Q;
+use thiserror::Error;
+use tokio::task::spawn_blocking;
 
-use crate::{AuthArc, TaskCommand, TaskStage, TaskStatus};
+use crate::{AuthArc, MessageManager, TaskCommand, TaskStage, TaskStatus};
+use crate::export::ExportError::NoVideoStream;
 use crate::player::r#impl::sec2ts;
 #[cfg(feature = "async")]
 use crate::spawn_async;
 use crate::util::{precise_seek, RationalExt, rescale};
+use crate::util::CheapClone;
 
 #[derive(Default)]
 pub enum ExportFollowUp {
@@ -52,16 +57,17 @@ impl ExportFollowUp {
     fn run(
         self,
         ctx: &Context,
+        msg: MessageManager,
         use_trash: bool,
         status: SyncSender<TaskStatus>,
         output_file: PathBuf,
         auth: AuthArc,
         task_cmds: Sender<TaskCommand>,
         task_id: u32,
-        after_follow_up: impl FnOnce(&Context) + Send + 'static,
+        after_follow_up: impl Send + 'static + FnOnce(&Context) -> Result<(), ExportError>,
         #[cfg(feature = "async")]
         cancel_recv: Option<tokio::sync::oneshot::Receiver<()>>,
-    ) {
+    ) -> Result<(), ExportError> {
         match self {
             ExportFollowUp::Nothing => after_follow_up(ctx),
             #[cfg(feature = "youtube")]
@@ -75,26 +81,27 @@ impl ExportFollowUp {
                     .data_mut(|d| d.get_persisted(Id::new("deleteAfterUpload")))
                     .unwrap_or(true);
                 let ctx = Context::clone(&ctx);
-
-                spawn_async(async move {
-                    let mut file = tokio::fs::File::open(&output_file).await.unwrap();
+                let msg2 = msg.cheap_clone();
+                let task = msg.handle_err_spawn("YouTube upload", async move {
+                    let msg = msg2;
+                    let mut file = tokio::fs::File::open(&output_file).await.map_err(|err| ExportError::OpenOutputFile { path: output_file.clone() /* technically we can do without cloning but it wouldnt be pretty */, err })?;
                     let auth = auth.read();
                     let yt = match &auth.youtube {
                         None => {
-                            task_cmds.send(TaskCommand::Cancel { id: task_id }).unwrap();
-                            return;
+                            task_cmds.send(TaskCommand::Cancel { id: task_id }).expect("task commands should only be closed if the UI thread is done");
+                            return Ok(());
                         }
                         Some(v) => v,
                     };
-                    let (title, description, visibility) = match info_recv.await.unwrap() {
+                    let (title, description, visibility) = match info_recv.await.expect("info receiver closed. looks like the user canceled the youtube upload (or the UI thread is closed)") {
                         youtube::YtInfo::Continue {
                             title,
                             description,
                             visibility,
                         } => (title, description, visibility),
                         youtube::YtInfo::Cancel => {
-                            task_cmds.send(TaskCommand::Cancel { id: task_id }).unwrap();
-                            return;
+                            task_cmds.send(TaskCommand::Cancel { id: task_id }).expect("task commands should only be closed if the UI thread is done");
+                            return Ok(());
                         }
                     };
                     status.send(TaskStatus {
@@ -113,16 +120,20 @@ impl ExportFollowUp {
                             }).unwrap();
                             println!("finished uploading");
 
-                            if should_delete {
-                                maybe_trash(use_trash, &output_file)
-                            }
-                            after_follow_up(&ctx);
+                            spawn_blocking(move || {
+                                if should_delete {
+                                    maybe_trash(use_trash, &output_file)?
+                                }
+                                after_follow_up(&ctx)
+                            }).await.expect("cleanup closure should not panic")
                         }
-                        _ = cancel_recv.unwrap() => {
-
+                        _ = cancel_recv.expect("youtube follow-up should not be passed without also passing an async stopper") => {
+                            Ok(())
                         }
                     }
                 });
+
+                Ok(())
             }
         }
     }
@@ -142,27 +153,58 @@ fn gts2lts(gts: i64, local_base: Rational) -> i64 {
     rescale(gts, AV_TIME_BASE_Q.into(), local_base)
 }
 
+#[derive(Error, Debug)]
+pub enum ExportError {
+    #[error("The provided video file has no video stream")]
+    NoVideoStream,
+    #[error("Received an error from FFmpeg: {0}")]
+    FFmpeg(#[from] ffmpeg_next::Error, Backtrace),
+    #[error("No encoder found for codec: {}", .id.name())]
+    NoEncoder {
+        id: codec::Id,
+    },
+    #[error("Could not create output directory(ies): {0}")]
+    CreateOutDir(io::Error),
+    #[error("Could not move {} to the recycling bin: {err}", .path.display())]
+    TrashErr {
+        path: PathBuf,
+        err: trash::Error,
+    },
+    #[error("Could not permanently delete {}: {err}", .path.display())]
+    DeleteErr {
+        path: PathBuf,
+        err: io::Error,
+    },
+    #[cfg(feature = "youtube")]
+    #[error("Could not open output file {}: {err}", .path.display())]
+    OpenOutputFile {
+        path: PathBuf,
+        err: io::Error,
+    },
+}
+
 pub fn audio_transcoder(
     input: &mut Input,
     output: &mut Output,
     in_stream_idx: usize,
     (start, end): (f32, f32),
-) -> Transcoder<AudioFrame, impl FnMut(&mut AudioFrame)> {
+) -> Result<Transcoder<AudioFrame, impl FnMut(&mut AudioFrame)>, ExportError> {
     let global_header = output
         .format()
         .flags()
         .contains(format::Flags::GLOBAL_HEADER);
-    let in_stream = input.stream(in_stream_idx).unwrap();
+    let in_stream = input.stream(in_stream_idx).expect("in_stream_idx should have been valid");
     let time_base = in_stream.time_base();
     let ts_rate = time_base.invert().value_f64();
 
-    let mut decoder = CodecContext::from_parameters(in_stream.parameters())
-        .unwrap_or_else(|err| todo!("could not get decoder: {err}"))
+    let mut decoder = CodecContext::from_parameters(in_stream.parameters())?
         .decoder()
-        .audio()
-        .unwrap_or_else(|e| todo!("{e}"));
-    let codec = encoder::find(decoder.codec().unwrap().id()).unwrap();
-    let mut out_stream = output.add_stream(codec).unwrap();
+        .audio()?;
+    let codec_id = decoder.codec().expect("decoder should have a codec").id();
+    let codec = encoder::find(codec_id).ok_or(ExportError::NoEncoder {
+        id: codec_id
+    })?;
+    let mut out_stream = output.add_stream(codec)?;
     out_stream.set_parameters(in_stream.parameters());
     out_stream.set_time_base(time_base);
     out_stream.set_avg_frame_rate(in_stream.avg_frame_rate());
@@ -173,9 +215,8 @@ pub fn audio_transcoder(
     unsafe { (&mut *out_stream.as_mut_ptr()).duration = end_ts - start_ts }
     let mut encoder = CodecContext::new_with_codec(codec)
         .encoder()
-        .audio()
-        .unwrap();
-    encoder.set_parameters(out_stream.parameters()).unwrap();
+        .audio()?;
+    encoder.set_parameters(out_stream.parameters())?;
     encoder.set_time_base(time_base);
     encoder.set_rate(decoder.rate() as i32);
 
@@ -183,10 +224,10 @@ pub fn audio_transcoder(
         encoder.set_flags(codec::Flags::GLOBAL_HEADER);
     }
 
-    let encoder = encoder.open_as(codec).unwrap();
+    let encoder = encoder.open_as(codec)?;
     out_stream.set_parameters(&encoder);
 
-    Transcoder {
+    Ok(Transcoder {
         start: start_ts,
         end: end_ts,
         decoder: decoder.0,
@@ -195,7 +236,7 @@ pub fn audio_transcoder(
         out_stream_idx: out_stream.index(),
         frame: AudioFrame::empty(),
         apply_frame_extra: |_| {},
-    }
+    })
 }
 
 pub fn video_transcoder(
@@ -203,23 +244,24 @@ pub fn video_transcoder(
     output: &mut Output,
     in_stream_idx: usize,
     (start, end): (f32, f32),
-) -> Transcoder<VideoFrame, impl FnMut(&mut VideoFrame)> {
+) -> Result<Transcoder<VideoFrame, impl FnMut(&mut VideoFrame)>, ExportError> {
     let global_header = output
         .format()
         .flags()
         .contains(format::Flags::GLOBAL_HEADER);
-    let in_stream = input.stream(in_stream_idx).unwrap();
+    let in_stream = input.stream(in_stream_idx).expect("in_stream_idx should have been valid");
     let time_base = in_stream.time_base();
     let ts_rate = time_base.invert().value_f64();
 
-    let mut decoder = CodecContext::from_parameters(in_stream.parameters())
-        .unwrap_or_else(|err| todo!("could not get decoder: {err}"))
+    let mut decoder = CodecContext::from_parameters(in_stream.parameters())?
         .decoder()
-        .video()
-        .unwrap_or_else(|e| todo!("{e}"));
+        .video()?;
 
-    let codec = encoder::find(decoder.codec().unwrap().id()).unwrap();
-    let mut out_stream = output.add_stream(codec).unwrap();
+    let codec_id = decoder.codec().expect("decoder should have a codec").id();
+    let codec = encoder::find(codec_id).ok_or(ExportError::NoEncoder {
+        id: codec_id
+    })?;
+    let mut out_stream = output.add_stream(codec)?;
     out_stream.set_parameters(in_stream.parameters());
     out_stream.set_time_base(time_base);
     out_stream.set_avg_frame_rate(in_stream.avg_frame_rate());
@@ -230,21 +272,20 @@ pub fn video_transcoder(
     unsafe { (&mut *out_stream.as_mut_ptr()).duration = end_ts - start_ts }
     let mut encoder = CodecContext::new_with_codec(codec)
         .encoder()
-        .video()
-        .unwrap();
-    encoder.set_parameters(out_stream.parameters()).unwrap();
+        .video()?;
+    encoder.set_parameters(out_stream.parameters())?;
     encoder.set_time_base(time_base);
     if global_header {
         encoder.set_flags(codec::Flags::GLOBAL_HEADER);
     }
-    let mut encoder = encoder.open_as(codec).unwrap();
+    let mut encoder = encoder.open_as(codec::id::Id::None)?;
     out_stream.set_parameters(&encoder);
 
     let mut frame = VideoFrame::empty();
 
     precise_seek(input, &mut decoder, &mut frame, in_stream_idx, start_ts);
 
-    Transcoder {
+    Ok(Transcoder {
         start: start_ts,
         end: end_ts,
         decoder: decoder.0,
@@ -257,7 +298,7 @@ pub fn video_transcoder(
             //      the encoder should by itself choose what frame type to use per frame
             frame.set_kind(picture::Type::None);
         },
-    }
+    })
 }
 
 struct Transcoder<Fr: Deref<Target=Frame> + DerefMut, Fn: FnMut(&mut Fr)> {
@@ -311,8 +352,10 @@ impl<Fr: Deref<Target=Frame> + DerefMut, Fn: FnMut(&mut Fr)> Transcoder<Fr, Fn> 
 
 static TASK_LOCK: Mutex<()> = Mutex::new(());
 
+#[must_use]
 pub fn export(
     ctx: Context,
+    msg: MessageManager,
     input: &mut Input,
     trim: (f32, f32),
     video_stream_idx: usize,
@@ -324,20 +367,20 @@ pub fn export(
     task_cmds: Sender<TaskCommand>,
     task_id: u32,
     #[cfg(feature = "async")] cancel_recv: Option<tokio::sync::oneshot::Receiver<()>>,
-) {
+) -> Result<(), ExportError> {
     let use_trash = ctx
         .data_mut(|d| d.get_persisted(Id::new("useTrash")))
         .unwrap_or(true);
 
-    let file_name = input_path.file_name().unwrap();
+    let file_name = input_path.file_name().expect("user should not be able to provide input path with no file name");
     let mut out_path =
-        PathBuf::from(ctx.data_mut(|d| d.get_persisted::<String>(Id::new("outPath")).unwrap()));
-    fs::create_dir_all(&out_path).unwrap();
+        PathBuf::from(ctx.data_mut(|d| d.get_persisted::<String>(Id::new("outPath")).expect("outPath should be already set once we get to exporting")));
+    fs::create_dir_all(&out_path).map_err(ExportError::CreateOutDir)?;
     out_path.push(file_name);
 
-    let mut output = output(&out_path).unwrap();
+    let mut output = output(&out_path)?;
 
-    let video = video_transcoder(input, &mut output, video_stream_idx, trim);
+    let video = video_transcoder(input, &mut output, video_stream_idx, trim)?;
 
     // all of these are in the video stream's ts units
     let video_start = video.start;
@@ -345,11 +388,14 @@ pub fn export(
 
     let mut video = Some(video);
     let mut audio =
-        audio_stream_idx.map(|audio_stream_idx| {
-            audio_transcoder(input, &mut output, audio_stream_idx, trim)
-        });
+        match audio_stream_idx {
+            None => None,
+            Some(audio_stream_idx) => {
+                Some(audio_transcoder(input, &mut output, audio_stream_idx, trim)?)
+            }
+        };
 
-    output.write_header().unwrap();
+    output.write_header()?;
 
     let mut packet = Packet::empty();
     let is_final_stage = matches!(follow_up, ExportFollowUp::Nothing);
@@ -377,7 +423,7 @@ pub fn export(
                     Err(TrySendError::Disconnected(_)) => {
                         // the channel is closed! that must mean the task was canceled OR the ui thread has shut down. just cancel
                         // todo: maybe delete the incomplete output file? should it be moved to trash or deleted directly?
-                        return;
+                        return Ok(());
                     }
                 }
 
@@ -408,7 +454,7 @@ pub fn export(
         transcoder.eof(&mut packet, &mut output);
     }
     drop((video, audio));
-    output.write_trailer().unwrap();
+    output.write_trailer()?;
     drop(lock);
 
     status.send(TaskStatus {
@@ -418,6 +464,7 @@ pub fn export(
 
     follow_up.run(
         &ctx,
+        msg,
         use_trash,
         status,
         out_path,
@@ -429,29 +476,34 @@ pub fn export(
                 .data_mut(|d| d.get_persisted(Id::new("deleteAfterExport")))
                 .unwrap_or(false)
             {
-                maybe_trash(use_trash, &input_path)
+                maybe_trash(use_trash, &input_path)?;
             }
+            Ok(())
         },
         #[cfg(feature = "async")]
         cancel_recv,
-    );
+    )
 }
 
-fn maybe_trash(use_trash: bool, path: impl AsRef<Path>) {
+fn maybe_trash(use_trash: bool, path: impl AsRef<Path>) -> Result<(), ExportError> {
     if use_trash {
         match trash::delete(&path) {
             Ok(_) => {}
             Err(trash::Error::CouldNotAccess { .. }) => {}
-            Err(e) => panic!(
-                "could not move {p} to the trash bin: {e}",
-                p = path.as_ref().display()
-            ),
+            Err(err) => return Err(ExportError::TrashErr {
+                err,
+                path: path.as_ref().to_path_buf(),
+            }),
         }
     } else {
         match fs::remove_file(&path) {
             Ok(_) => {}
             Err(e) if e.kind() == ErrorKind::NotFound => {}
-            Err(e) => panic!("could not delete {p}: {e}", p = path.as_ref().display()),
+            Err(err) => return Err(ExportError::DeleteErr {
+                err,
+                path: path.as_ref().to_path_buf(),
+            }),
         }
     }
+    Ok(())
 }

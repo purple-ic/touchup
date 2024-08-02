@@ -31,7 +31,7 @@ use rodio::{OutputStream, Sink, Source};
 
 use VideoTime::PausedAt;
 
-use crate::{AuthArc, PlayerTexture, TaskCommand, TaskStatus, TextureArc};
+use crate::{AuthArc, MessageManager, PlayerTexture, TaskCommand, TaskStatus, TextureArc};
 use crate::export::{export, ExportFollowUp};
 use crate::player::r#impl::PlayerCommand::UpdatePreview;
 use crate::player::r#impl::VideoTime::Anchored;
@@ -39,6 +39,7 @@ use crate::util::{
     CloseReceiver, OwnedThreads, precise_seek, RationalExt, spawn_owned_thread, time_diff,
     Updatable,
 };
+use crate::util::CheapClone;
 
 // #[derive(Debug)]
 enum PlayerCommand {
@@ -257,7 +258,7 @@ impl Player {
         *self.time.get()
     }
 
-    pub fn new(gui_ctx: Context, input: Input, input_path: PathBuf, starting_volume: f32, texture: TextureArc) -> Self {
+    pub fn new(gui_ctx: Context, msg: MessageManager, input: Input, input_path: PathBuf, starting_volume: f32, texture: TextureArc) -> Self {
         let (info_send, info_recv) = mpsc::channel();
         let (commands_send, commands_recv) = mpsc::sync_channel(20);
         let (time_updater, time) = Updatable::new(PausedAt(Duration::ZERO));
@@ -267,6 +268,7 @@ impl Player {
         let thread_owner = spawn_owned_thread("video".into(), |closer| {
             Self::setup(
                 gui_ctx,
+                msg,
                 input,
                 input_path,
                 info_send,
@@ -304,6 +306,7 @@ impl Player {
 
     fn setup(
         gui_ctx: Context,
+        msg: MessageManager,
         mut input: Input,
         input_path: PathBuf,
         info_send: mpsc::Sender<PlayerStartupInfo>,
@@ -407,6 +410,7 @@ impl Player {
             decoder: video_decoder,
             scaler,
             gui_ctx,
+            msg,
             time: Anchored(Instant::now()),
             // anchor: Instant::now(),
             texture,
@@ -522,6 +526,7 @@ struct VideoManager {
     scaler: Scaler,
 
     gui_ctx: Context,
+    msg: MessageManager,
     time: VideoTime,
     texture: TextureArc,
     input_path: PathBuf,
@@ -674,6 +679,7 @@ impl VideoManager {
         let ctx = self.gui_ctx.clone();
         let input_mutex = Arc::clone(&self.input_mutex);
         let stream_idx = self.stream_idx;
+        let msg = self.msg.cheap_clone();
         thread::Builder::new()
             .name(format!("taskExport{id}"))
             .spawn(move || {
@@ -688,21 +694,25 @@ impl VideoManager {
                         .unwrap()
                         .index()
                     );
-                export(
-                    ctx,
-                    &mut input.0,
-                    trim,
-                    stream_idx,
-                    audio_stream_idx,
-                    status,
-                    path,
-                    auth,
-                    follow_up,
-                    task_cmds,
-                    id,
-                    #[cfg(feature = "async")]
-                    cancel_recv,
-                )
+                let msg2 = msg.cheap_clone();
+                msg.handle_err("export", move || {
+                    export(
+                        ctx,
+                        msg2,
+                        &mut input.0,
+                        trim,
+                        stream_idx,
+                        audio_stream_idx,
+                        status,
+                        path,
+                        auth,
+                        follow_up,
+                        task_cmds,
+                        id,
+                        #[cfg(feature = "async")]
+                        cancel_recv,
+                    )
+                });
             })
             .unwrap();
     }

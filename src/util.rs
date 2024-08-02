@@ -1,5 +1,6 @@
 use std::{iter, mem, thread};
 use std::cmp::Ordering;
+use std::error::Error;
 use std::ffi::c_int;
 use std::sync::{Arc, mpsc, Once};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError};

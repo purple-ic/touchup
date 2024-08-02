@@ -16,7 +16,7 @@ use egui::load::Bytes;
 use ffmpeg::format;
 use rfd::{MessageButtons, MessageDialog, MessageLevel};
 
-use crate::{AuthArc, TaskCommand, TaskStatus, TextureArc};
+use crate::{AuthArc, MessageManager, TaskCommand, TaskStatus, TextureArc};
 use crate::export::ExportFollowUp;
 use crate::player::r#impl::Player;
 use crate::util::{BoolExt, time_diff};
@@ -92,6 +92,7 @@ impl PlayerUI {
 
     pub fn new(
         ctx: &Context,
+        msg: MessageManager,
         path: &(impl AsRef<Path> + ?Sized),
         frame: &mut Frame,
         texture: TextureArc
@@ -125,6 +126,7 @@ impl PlayerUI {
         Some(Self {
             player: Player::new(
                 Context::clone(&ctx),
+                msg,
                 input,
                 path.as_ref().into(),
                 if enable_sound { volume } else { 0. },

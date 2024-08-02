@@ -11,7 +11,7 @@ use eframe::Frame;
 use egui::{Align, Align2, Button, Color32, Context, CursorIcon, FontId, Image, include_image, Layout, RichText, Sense, Ui, Vec2, Widget, WidgetText};
 use egui::load::ImageLoader;
 
-use crate::{AuthArc, Task, TaskCommand, TaskStage, TaskStatus, TextureArc};
+use crate::{AuthArc, MessageManager, Task, TaskCommand, TaskStage, TaskStatus, TextureArc};
 use crate::editor::EditorExit::ToSelectScreen;
 use crate::export::ExportFollowUp;
 use crate::player::{PlayerUI, write_duration};
@@ -33,8 +33,8 @@ pub enum EditorExit {
 }
 
 impl Editor {
-    pub fn new(ctx: &Context, path: PathBuf, frame: &mut Frame, texture: TextureArc) -> Option<Self> {
-        let player = PlayerUI::new(ctx, &path, frame, texture)?;
+    pub fn new(ctx: &Context, msg: MessageManager, path: PathBuf, frame: &mut Frame, texture: TextureArc) -> Option<Self> {
+        let player = PlayerUI::new(ctx, msg, &path, frame, texture)?;
 
         Some(Editor {
             trim: (0.)..=player.duration().as_secs_f32(),
@@ -82,7 +82,7 @@ impl Editor {
                 ui.columns(self.player.nb_audio_tracks() + 1, |columns| {
                     let mut columns = columns.iter_mut();
                     {
-                        let ui = columns.next().unwrap();
+                        let ui = columns.next().unwrap_or_else(|| unreachable!());
                         ui.radio_value(
                             &mut self.current_audio_track,
                             None,
@@ -228,7 +228,7 @@ impl Editor {
                     let (send, recv) = tokio::sync::oneshot::channel();
                     exit = Some(EditorExit::ToYoutubeScreen {
                         init: crate::youtube::YtScreen {
-                            title: self.path.file_stem().unwrap().to_string_lossy().into(),
+                            title: self.path.file_stem().unwrap_or_else(|| unreachable!("user should not be able to select a path without a file stem")).to_string_lossy().into(),
                             description: "".to_string(),
                             send_final: Some(send),
                             // task_id will be incremented later, in the `export` closure
@@ -335,7 +335,7 @@ impl<'a> Trimmer<'a> {
                     (1., Color32::BLACK),
                 );
                 let mut str = String::new();
-                write_duration(Duration::from_secs_f32(current), &mut str).unwrap();
+                write_duration(Duration::from_secs_f32(current), &mut str).expect("writing duration to String should not fail");
                 painter.text(
                     r.center_bottom(),
                     Align2::CENTER_TOP,

@@ -10,6 +10,7 @@ repository = "https://github.com/purple-ic/touchup"
 description = "A program to quickly edit video clips"
 
 [dependencies]
+thiserror = "1.0.63"
 log = "0.4.22"
 simple_logger = { version = "5.0.0", features = ["threads"] }
 
