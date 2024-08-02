@@ -1,6 +1,7 @@
 #![cfg(feature = "youtube")]
 
 use std::{fs, io, iter, mem};
+use std::borrow::Cow;
 use std::error::Error;
 use std::fmt::Write;
 use std::fs::File;
@@ -16,23 +17,23 @@ use egui::{Button, Color32, Context, CursorIcon, Id, Image, ImageSource, include
 use egui::util::IdTypeMap;
 use futures::Stream;
 use futures_util::StreamExt;
-use http_body_util::{BodyExt, BodyStream, Full, StreamBody};
-use http_body_util::combinators::{BoxBody, WithTrailers};
-use hyper::body::{Body, Bytes, Frame};
-use hyper::Request;
+use log::debug;
+use reqwest::{Body, multipart};
+use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::AsyncSeekExt;
 use tokio::sync::oneshot;
 use tokio::task::spawn_blocking;
 use tokio_util::bytes::{BufMut, BytesMut};
-use tokio_util::codec::FramedRead;
+use tokio_util::codec::{BytesCodec, FramedRead};
 use tokio_util::io::ReaderStream;
 use yup_oauth2::{ConsoleApplicationSecret, InstalledFlowAuthenticator, InstalledFlowReturnMethod};
-use yup_oauth2::authenticator::{Authenticator, DefaultHyperClient};
+use yup_oauth2::authenticator::{Authenticator, DefaultHyperClient, HyperClientBuilder};
 use yup_oauth2::authenticator_delegate::InstalledFlowDelegate;
+use yup_oauth2::hyper_rustls::HttpsConnector;
 
-use crate::{AuthArc, https_client, HttpsClient, HttpsConnector, infallible_unreachable, spawn_async, storage, Task};
+use crate::{AuthArc, header_map, https_client, infallible_unreachable, spawn_async, storage, Task};
 use crate::util::{AnyExt, Updatable};
 
 pub enum YtInfo {
@@ -208,7 +209,10 @@ pub(super) fn is_trying_login(data: &IdTypeMap) -> bool {
     data.get_temp::<LoginUrl>(Id::NULL).is_some()
 }
 
-pub type YtAuth = Authenticator<HttpsConnector>;
+pub struct YtCtx {
+    pub auth: Authenticator<<DefaultHyperClient as HyperClientBuilder>::Connector>,
+    pub upload_url: String,
+}
 
 pub const UPLOAD_SCOPE: &str = "https://www.googleapis.com/auth/youtube.upload";
 
@@ -217,7 +221,7 @@ pub(crate) async fn yt_auth(
     send_url: mpsc::Sender<String>,
     cancel: oneshot::Receiver<()>,
     keep_login: bool,
-) -> Result<YtAuth, ()> {
+) -> Result<YtCtx, ()> {
     let secret: ConsoleApplicationSecret =
         serde_json::from_slice(include_bytes!("../embedded/yt_cred.json")).unwrap();
 
@@ -248,9 +252,9 @@ pub(crate) async fn yt_auth(
     }
 
     let ctx2 = ctx.clone();
-    let out = tokio::select! {
+    let auth = tokio::select! {
         _ = cancel => {
-            Err(())
+            return Err(())
         }
         v = async {
             let mut auth = InstalledFlowAuthenticator::builder(
@@ -263,11 +267,15 @@ pub(crate) async fn yt_auth(
 
             // try to cache the token for the upload scope
             let _ = auth.token(&[UPLOAD_SCOPE]).await;
-            Ok(auth)
+            auth
         } => v
     };
     ctx.data_mut(|d| d.remove_by_type::<LoginUrl>());
-    out
+    // todo: allow updating the upload_url with an api
+    Ok(YtCtx {
+        auth,
+        upload_url: "https://www.googleapis.com/upload/youtube/v3/videos".into(),
+    })
 }
 
 pub fn yt_token_file() -> PathBuf {
@@ -286,10 +294,10 @@ pub fn yt_delete_token_file() {
     }
 }
 
-pub fn yt_log_out(yt: &YtAuth) {
+pub fn yt_log_out(yt: &YtCtx) {
 
     // auth is reference-counted
-    let auth = yt.clone();
+    let auth = yt.auth.clone();
     // hyper client is reference-counted
     let client = https_client().clone();
 
@@ -302,11 +310,12 @@ pub fn yt_log_out(yt: &YtAuth) {
             Err(_) => todo!("handle get_token errors")
         };
 
-        let req = Request::post(format!("https://oauth2.googleapis.com/revoke?token={token}"))
-            // empty vec
-            .body(BoxBody::new(http_body_util::Empty::new().map_err(|x| infallible_unreachable!(x))))
+        https_client()
+            .post("https://oauth2.googleapis.com/revoke")
+            .query(&[("token", token)])
+            .send()
+            .await
             .unwrap();
-        client.request(req).await.unwrap_or_else(|_| todo!());
     });
 
     yt_delete_token_file();
@@ -384,34 +393,18 @@ impl YtAuthScreen {
     }
 }
 
-macro_rules! boundary {
-    () => {
-        "80mrfViESZWCKublS1IevnC0ILSoWLdf"
-    };
-}
-// todo: should this maybe be randomly generated per upload? idk
-const BOUNDARY: &str = boundary!();
-
-pub async fn yt_upload(client: &HttpsClient, file: &mut tokio::fs::File, auth: &YtAuth, title: &str, description: &str, vis: YtVisibility) {
+pub async fn yt_upload(client: &reqwest::Client, file_name: String, mut file: tokio::fs::File, ctx: &YtCtx, title: &str, description: &str, vis: YtVisibility) {
+    // todo: track upload progress
     let file_len = file.seek(SeekFrom::End(0)).await.unwrap();
-    file.seek(SeekFrom::Start(0)).await.unwrap();
 
     // these docs are for google drive but the same multipart method applies to the youtube api
     // https://developers.google.com/drive/api/guides/manage-uploads#multipart
 
     let body_len = dbg!(file_len) as usize /* the vec will 100% exceed the file_len capacity, but starting at file_len is already good as it'll prevent a LOT of reallocations anyway */;
 
-    let token = auth.token(&[UPLOAD_SCOPE]).await.unwrap();
+    let token = ctx.auth.token(&[UPLOAD_SCOPE]).await.unwrap();
     let token = token.token()
         .expect("successful token requests with upload scope must always return access tokens");
-
-    // todo: use spawn_blocking here
-    let mut body_start = BytesMut::new();
-
-    // part 1: metadata -- the video snippet in JSON form
-    writeln!(body_start, "--{BOUNDARY}").unwrap();
-    writeln!(body_start, "Content-Type: application/json; charset=UTF-8").unwrap();
-    writeln!(body_start).unwrap();
 
     let snippet = json!({
                 "snippet": {
@@ -422,45 +415,55 @@ pub async fn yt_upload(client: &HttpsClient, file: &mut tokio::fs::File, auth: &
                     "privacyStatus": vis.api_str(),
                 }
             });
-    body_start.put_slice(serde_json::to_string(&snippet).unwrap().as_bytes());
-    writeln!(body_start).unwrap();
-    // part 2: media -- the raw bytes of the video
-    writeln!(body_start, "--{BOUNDARY}").unwrap();
-    writeln!(body_start, "Content-Type: video/*").unwrap();
-    writeln!(body_start, "Content-Length: {file_len}").unwrap();
-    writeln!(body_start).unwrap();
-    let body_start = Bytes::from(body_start);
-    let body_end = Bytes::from_static(concat!("\n\n--", boundary!(), "--").as_bytes());
+    let mut attempts = 0;
 
     loop {
-        let body_start
-            = futures::stream::iter(iter::once(Ok(Frame::data(Bytes::clone(&body_start)))));
-        let body_end
-            = futures::stream::iter(iter::once(Ok(Frame::data(Bytes::clone(&body_end)))));
+        debug!("starting yt upload...");
+        let metadata = serde_json::to_vec(&snippet).unwrap();
+        file.seek(SeekFrom::Start(0)).await.unwrap();
 
-        let request = Request::post("https://www.googleapis.com/upload/youtube/v3/videos?uploadType=multipart&part=status,snippet")
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Content-Type", concat!("multipart/related; boundary=", boundary!()))
-            .body(
-                BoxBody::new(StreamBody::new(body_start
-                    .chain(ReaderStream::new(file.try_clone().await.unwrap()).map(|x| x.map(Frame::data)))
-                    .chain(body_end)))
-            )
-            .unwrap();
+        let f = file.try_clone().await.unwrap();
+        let form = multipart::Form::new().percent_encode_noop().part(
+            "metadata",
+            multipart::Part::bytes(metadata)
+                .headers(header_map! {
+                    "content-type": "application/json; charset=UTF-8"
+                }),
+        ).part(
+            "video",
+            multipart::Part::stream(f)
+                .file_name(file_name.clone())
+                .headers(
+                    header_map! {
+                        "content-type": "video/*",
+                        "content-length": HeaderValue::from(file_len)
+                    }
+                ),
+        );
 
-        // todo: handle quota errors correctly? maybe? we probably won't need to in production anyway so
-        let out = client.request(request).await.unwrap();
+        // "https://www.googleapis.com/upload/youtube/v3/videos"
+        let out = client.post(&ctx.upload_url)
+            .multipart(form)
+            .bearer_auth(token)
+            .query(&[
+                ("uploadType", "multipart"),
+                ("part", "status,snippet")
+            ]).send()
+            .await.unwrap();
+
         let status = out.status();
+
         if status.is_success() {
             break
-        } else if status.is_server_error() || status.is_client_error() {
+        } else if (status.is_server_error() || status.is_client_error()) && attempts < 5 {
+            debug!("retrying request ({status})");
+            attempts += 1;
             file.seek(SeekFrom::Start(0)).await.unwrap();
             continue // retry for error codes 5xx and 4xx
         } else {
-            let body = out.into_body().collect().await.unwrap().to_bytes();
-            let body_json = serde_json::from_slice::<Value>(&body).ok();
-            if let Some(body) = body_json {
-                panic!("could not upload youtube video: {status} -> {:?}", body.get("error").and_then(|v| v.get("message")))
+            let body = out.json::<Value>().await.ok();
+            if let Some(body) = body {
+                panic!("could not upload youtube video: {status} -> {:?}", body)
             } else {
                 panic!("could not upload youtube video: {status}");
             }

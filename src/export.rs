@@ -103,7 +103,7 @@ impl ExportFollowUp {
                     }).unwrap();
 
                     let upload_video = youtube::yt_upload(
-                        crate::https_client(), &mut file, yt, &title, &description, visibility,
+                        crate::https_client(), output_file.file_name().map(|str| str.to_string_lossy().into_owned()).unwrap_or_else(|| "<unknown>".into()), file, yt, &title, &description, visibility,
                     );
                     tokio::select! {
                         v = upload_video => {

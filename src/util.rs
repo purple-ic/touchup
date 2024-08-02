@@ -1,13 +1,11 @@
 use std::{iter, mem, thread};
 use std::cmp::Ordering;
-use std::convert::Infallible;
 use std::ffi::c_int;
 use std::sync::{Arc, mpsc, Once};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use eframe::glow::{INVALID_ENUM, INVALID_FRAMEBUFFER_OPERATION, INVALID_OPERATION, INVALID_VALUE, NO_ERROR, OUT_OF_MEMORY, STACK_OVERFLOW, STACK_UNDERFLOW};
 use ffmpeg::ffi::{AV_PKT_FLAG_DISCARD, av_seek_frame, AVSEEK_FLAG_BACKWARD};
 use ffmpeg::format::context::Input;
 use ffmpeg::frame::Video;
@@ -15,6 +13,8 @@ use ffmpeg::packet::Mut;
 use ffmpeg::Rational;
 use ffmpeg::sys::av_rescale_q;
 use ffmpeg_next::codec::decoder::video::Video as VideoDecoder;
+
+pub use async_util::*;
 
 pub trait RationalExt {
     fn value_f64(self) -> f64;
@@ -305,30 +305,129 @@ pub trait AnyExt {
 impl<T> AnyExt for T {}
 
 #[cfg(feature = "async")]
-pub struct AsyncCanceler {
-    send: Option<tokio::sync::oneshot::Sender<()>>,
-}
+mod async_util {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
 
-#[cfg(feature = "async")]
-impl AsyncCanceler {
-    pub fn new(send_cancel: tokio::sync::oneshot::Sender<()>) -> Self {
-        Self {
-            send: Some(send_cancel)
+    use replace_with::{replace_with_or_abort, replace_with_or_abort_and_return};
+    use tokio::sync::oneshot;
+    use tokio::sync::oneshot::error::TryRecvError;
+    use tokio::task::JoinHandle;
+
+    #[cfg(feature = "async")]
+    pub struct AsyncCanceler {
+        send: Option<oneshot::Sender<()>>,
+    }
+
+    #[cfg(feature = "async")]
+    impl AsyncCanceler {
+        pub fn new(send_cancel: oneshot::Sender<()>) -> Self {
+            Self {
+                send: Some(send_cancel)
+            }
         }
     }
-}
 
-#[cfg(feature = "async")]
-impl Drop for AsyncCanceler {
-    fn drop(&mut self) {
-        match self.send.take() {
-            None => {
-                if cfg!(debug_assertions) {
-                    panic!("AsyncCanceler has `send = None`. has it been dropped twice?")
+    #[cfg(feature = "async")]
+    impl Drop for AsyncCanceler {
+        fn drop(&mut self) {
+            match self.send.take() {
+                None => {
+                    if cfg!(debug_assertions) {
+                        panic!("AsyncCanceler has `send = None`. has it been dropped twice?")
+                    }
+                }
+                Some(send) => {
+                    let _ = send.send(());
                 }
             }
-            Some(send) => {
-                let _ = send.send(());
+        }
+    }
+
+    enum PromiseInner<T> {
+        Complete(T),
+        Waiting(oneshot::Receiver<T>),
+    }
+
+    // todo: maybe we can just replace the inner value with Arc<OnceLock<T>>? or Arc<OnceCell<T>>? idk
+    pub struct Promise<T> {
+        inner: PromiseInner<T>,
+    }
+
+    impl<T> Promise<T> {
+        pub fn complete(value: T) -> Self {
+            Self {
+                inner: PromiseInner::Complete(value)
+            }
+        }
+
+        pub fn wrap(recv: oneshot::Receiver<T>) -> Self {
+            Self {
+                inner: PromiseInner::Waiting(recv)
+            }
+        }
+
+        pub fn spawn(future: impl Future<Output=T> + 'static + Send) -> Self
+        where
+            T: Send + 'static,
+        {
+            let (send, recv) = oneshot::channel();
+            crate::spawn_async(async move {
+                let value = future.await;
+                let _ = send.send(value);
+            });
+            Self::wrap(recv)
+        }
+
+        pub fn get(&mut self) -> Option<&mut T> {
+            match &mut self.inner {
+                PromiseInner::Complete(_) => {},
+                PromiseInner::Waiting(recv) => {
+                    match recv.try_recv() {
+                        Ok(v) => {
+                            self.inner = PromiseInner::Complete(v);
+                        }
+                        Err(_) => {
+                            return None
+                        }
+                    }
+                }
+            }
+            match &mut self.inner {
+                PromiseInner::Complete(v) => Some(v),
+                PromiseInner::Waiting(_) => unreachable!()
+            }
+        }
+
+        pub fn get_now(&self) -> Option<&T> {
+            match &self.inner {
+                PromiseInner::Complete(v) => Some(v),
+                PromiseInner::Waiting(_) => None,
+            }
+        }
+
+        pub fn take_now(self) -> Result<T, Self> {
+            match self.inner {
+                PromiseInner::Complete(v) => Ok(v),
+                inner @ PromiseInner::Waiting(_) => Err(Self { inner }),
+            }
+        }
+
+        pub async fn await_value(&mut self) -> &mut T {
+            if let PromiseInner::Waiting(w) = &mut self.inner {
+                w.await.unwrap_or_else(|_| todo!());
+            }
+            match &mut self.inner {
+                PromiseInner::Complete(v) => v,
+                PromiseInner::Waiting(_) => unreachable!()
+            }
+        }
+
+        pub async fn take_await_value(self) -> T {
+            match self.inner {
+                PromiseInner::Complete(v) => v,
+                PromiseInner::Waiting(recv) => recv.await.unwrap_or_else(|_| todo!())
             }
         }
     }
@@ -341,4 +440,23 @@ macro_rules! infallible_unreachable {
         let v: ::core::convert::Infallible = $inf;
         unreachable!("infallible cannot exist at runtime")
     }};
+}
+
+#[macro_export]
+macro_rules! header_map {
+    // if $value is a literal, then we expect it to be a string and just create a string header value
+    // if $value is an expression and not *just* a literal, then we expect it to return its own HeaderValue
+    { @INTERNAL@VALUE@ $value:literal } => {
+        ::reqwest::header::HeaderValue::from_static($value)
+    };
+    { @INTERNAL@VALUE@ $value:expr } => {
+        $value
+    };
+    { $($name:literal: $value:expr), *$(,)? } => {
+        ::reqwest::header::HeaderMap::from_iter(
+            [
+                $((::reqwest::header::HeaderName::from_static($name), $crate::header_map!(@INTERNAL@VALUE@ $value))),*
+            ]
+        )
+    };
 }

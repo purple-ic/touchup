@@ -27,7 +27,7 @@ in a zip file. Those zip files can be found [here](https://github.com/purple-ic/
 
 Releases come in two different flavors:
 
-- Default: comes with the usual features (i.e. self-updating and YouTube support)
+- Default: comes with the usual features (i.e. YouTube uploads)
 - Mini: only includes the base functionality of TouchUp
 
 If you'd like to further configure the included [features](#feature-flags) or
@@ -81,10 +81,7 @@ Default features (such as `youtube`) can be disabled by also passing `--no-defau
 
 - `youtube` (enabled by default): enables support for uploading clips to YouTube. You
   may want to disable this to speed up compilation time or to not depend on the `async` feature (see below)
-- `update` (enabled by default): enables self-updates. This may not work on certain
-  operating systems if they do not support file locking, but it's recommended to make
-  sure you receive both important and unimportant updates. (the app *always* asks you before updating)
-- `async` (required for `youtube` & `update`): spins up an async runtime. This may be somewhat taxing
+- `async` (required for `youtube`): spins up an async runtime. This may be somewhat taxing
   on your device and might decrease compilation time, but it'll most likely be fine.
 
 ## License

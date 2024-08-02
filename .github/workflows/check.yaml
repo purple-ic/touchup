@@ -15,12 +15,9 @@ jobs:
       matrix:
         os: [ ubuntu-latest ] #todo
         enable-yt: [ enable-yt, disable-yt ]
-        enable-upd: [ enable-upd, disable-upd ]
         include:
           - enable-yt: enable-yt
             yt: "-F youtube"
-          - enable-upd: enable-upd
-            upd: "-F update"
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -42,4 +39,4 @@ jobs:
           sudo apt-get install -y libasound2-dev
       - name: Check TouchUp compilation
         run: |
-          cargo check --no-default-features ${{ matrix.yt }} ${{ matrix.upd }}
+          cargo check --no-default-features ${{ matrix.yt }}

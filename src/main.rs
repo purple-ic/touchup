@@ -18,8 +18,10 @@ use egui::{Align, Color32, Context, Id, ImageData, Label, Layout, ProgressBar, R
 use egui::epaint::mutex::RwLock;
 use egui::epaint::TextureManager;
 use egui::panel::TopBottomSide;
+use log::{info, LevelFilter};
 use replace_with::replace_with;
 use serde::{Deserialize, Serialize};
+use simple_logger::SimpleLogger;
 
 use crate::editor::{Editor, EditorExit};
 use crate::select::{SelectScreen, SelectScreenOut};
@@ -29,42 +31,19 @@ mod editor;
 pub mod export;
 pub mod player;
 mod select;
-mod updater;
 mod util;
 mod youtube;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-#[cfg(feature = "hyper")]
-pub type HttpsConnector =
-hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>;
-
-#[cfg(feature = "hyper")]
-pub type HttpsClient = hyper_util::client::legacy::Client<
-    HttpsConnector,
-    http_body_util::combinators::BoxBody<hyper::body::Bytes, std::io::Error>,
->;
-
-#[cfg(feature = "hyper")]
-pub fn https_client() -> &'static HttpsClient {
-    static CLIENT: OnceLock<HttpsClient> = OnceLock::new();
+#[cfg(feature = "reqwest")]
+pub fn https_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
     CLIENT.get_or_init(|| {
-        use hyper_util::client::legacy::Client;
-        use hyper_util::rt::TokioExecutor;
-
-        let https = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .unwrap()
-            .https_only()
-            .enable_http1()
-            .build();
-
-        let client = Client::builder(TokioExecutor::new())
-            .http2_only(false)
-            .build(https);
-
-        client
+        reqwest::Client::builder()
+            .use_rustls_tls()
+            .build().unwrap()
     })
 }
 
@@ -73,7 +52,7 @@ pub fn https_client() -> &'static HttpsClient {
 pub struct Auth {
     pub ctx: Context,
     #[cfg(feature = "youtube")]
-    pub youtube: Option<youtube::YtAuth>,
+    pub youtube: Option<youtube::YtCtx>,
 }
 
 #[cfg(any(feature = "youtube"))]
@@ -106,15 +85,21 @@ where
 }
 
 fn main() {
-    println!("TouchUp version {VERSION}");
+    SimpleLogger::new()
+        .with_colors(true)
+        .with_level(
+            if cfg!(debug_assertions) {
+                LevelFilter::Debug
+            } else {
+                LevelFilter::Warn
+            }
+        )
+        .init()
+        .unwrap();
+    info!("TouchUp version {VERSION}");
 
     // todo: remove this line
     storage();
-
-    #[cfg(feature = "hyper")]
-    {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    }
 
     #[cfg(feature = "async")]
     let barrier = Arc::new(Barrier::new(2));
@@ -151,9 +136,6 @@ fn main() {
         barrier.wait();
         drop(barrier);
     }
-
-    #[cfg(feature = "update")]
-    spawn_async(updater::check_updates());
 
     eframe::run_native(
         "TouchUp",
