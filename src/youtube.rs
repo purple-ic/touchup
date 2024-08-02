@@ -217,7 +217,7 @@ pub struct YtCtx {
     pub upload_url: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct YtVInfo {
     upload_url: String,
@@ -244,12 +244,14 @@ pub async fn yt_auth(
         .header("User-Agent", "TouchUp")
         .header("X-GitHub-Api-Version", "2022-11-28")
         .header("Accept", "application/vnd.github.raw+json")
+        .bearer_auth(env!("GH_TOKEN_TODO_REMOVE"))
         .send()
         .await
         .unwrap()
         .json::<YtVInfo>()
         .await
         .unwrap();
+    debug!("yt version info: {v_info:?}");
     if v_info.outdated {
         spawn_blocking(|| {
             yt_delete_token_file();
