@@ -15,6 +15,7 @@ use ffmpeg::Rational;
 use ffmpeg::sys::av_rescale_q;
 use ffmpeg_next::codec::decoder::video::Video as VideoDecoder;
 
+#[cfg(feature = "async")]
 pub use async_util::*;
 
 pub trait RationalExt {
