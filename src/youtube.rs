@@ -13,7 +13,10 @@ use std::sync::{Arc, mpsc};
 use std::thread::Scope;
 
 use eframe::emath::{Align, Vec2};
-use egui::{Button, Color32, Context, CursorIcon, Id, Image, ImageSource, include_image, Label, Layout, OpenUrl, RichText, Sense, TextBuffer, TextEdit, TextStyle, Ui, Widget};
+use egui::{
+    Button, Color32, Context, CursorIcon, Id, Image, ImageSource, include_image, Label, Layout,
+    OpenUrl, RichText, Sense, TextBuffer, TextEdit, TextStyle, Ui, Widget,
+};
 use egui::util::IdTypeMap;
 use futures::Stream;
 use futures_util::StreamExt;
@@ -33,7 +36,7 @@ use yup_oauth2::authenticator::{Authenticator, DefaultHyperClient, HyperClientBu
 use yup_oauth2::authenticator_delegate::InstalledFlowDelegate;
 use yup_oauth2::hyper_rustls::HttpsConnector;
 
-use crate::{AuthArc, header_map, https_client, infallible_unreachable, spawn_async, storage, Task};
+use crate::{AuthArc, header_map, https_client, infallible_unreachable, MessageManager, spawn_async, storage, Task};
 use crate::util::{AnyExt, Updatable};
 
 pub enum YtInfo {
@@ -214,18 +217,45 @@ pub struct YtCtx {
     pub upload_url: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct YtVInfo {
+    upload_url: String,
+    outdated: bool,
+}
+
 pub const UPLOAD_SCOPE: &str = "https://www.googleapis.com/auth/youtube.upload";
 
-pub(crate) async fn yt_auth(
+pub enum YtAuthErr {
+    Outdated,
+}
+
+pub async fn yt_auth(
     ctx: &Context,
     send_url: mpsc::Sender<String>,
-    cancel: oneshot::Receiver<()>,
     keep_login: bool,
-) -> Result<YtCtx, ()> {
+) -> Result<YtCtx, YtAuthErr> {
     let secret: ConsoleApplicationSecret =
         serde_json::from_slice(include_bytes!("../embedded/yt_cred.json")).unwrap();
 
     let client = https_client();
+    let v_info = client
+        .get("https://api.github.com/repos/purple-ic/touchup/contents/data/youtube/vinfo1.json")
+        .header("User-Agent", "TouchUp")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .header("Accept", "application/vnd.github.raw+json")
+        .send()
+        .await
+        .unwrap()
+        .json::<YtVInfo>()
+        .await
+        .unwrap();
+    if v_info.outdated {
+        spawn_blocking(|| {
+            yt_delete_token_file();
+        });
+        return Err(YtAuthErr::Outdated);
+    }
 
     struct CodePresenter {
         ctx: Context,
@@ -252,29 +282,29 @@ pub(crate) async fn yt_auth(
     }
 
     let ctx2 = ctx.clone();
-    let auth = tokio::select! {
-        _ = cancel => {
-            return Err(())
-        }
-        v = async {
-            let mut auth = InstalledFlowAuthenticator::builder(
-                secret.installed.unwrap(),
-                InstalledFlowReturnMethod::HTTPRedirect,
-            )
-                .maybe_apply(keep_login, |builder| builder.persist_tokens_to_disk(yt_token_file()))
-                .flow_delegate(Box::new(CodePresenter { ctx: ctx2, send_url }))
-                .build().await.unwrap();
+    let mut auth = InstalledFlowAuthenticator::builder(
+        secret.installed.unwrap(),
+        InstalledFlowReturnMethod::HTTPRedirect,
+    )
+        .maybe_apply(keep_login, |builder| {
+            builder.persist_tokens_to_disk(yt_token_file())
+        })
+        .flow_delegate(Box::new(CodePresenter {
+            ctx: ctx2,
+            send_url,
+        }))
+        .build()
+        .await
+        .unwrap();
 
-            // try to cache the token for the upload scope
-            let _ = auth.token(&[UPLOAD_SCOPE]).await;
-            auth
-        } => v
-    };
+    // try to cache the token for the upload scope
+    let _ = auth.token(&[UPLOAD_SCOPE]).await;
+
     ctx.data_mut(|d| d.remove_by_type::<LoginUrl>());
     // todo: allow updating the upload_url with an api
     Ok(YtCtx {
         auth,
-        upload_url: "https://www.googleapis.com/upload/youtube/v3/videos".into(),
+        upload_url: v_info.upload_url,
     })
 }
 
@@ -295,11 +325,8 @@ pub fn yt_delete_token_file() {
 }
 
 pub fn yt_log_out(yt: &YtCtx) {
-
     // auth is reference-counted
     let auth = yt.auth.clone();
-    // hyper client is reference-counted
-    let client = https_client().clone();
 
     // revoke the access token
     spawn_async(async move {
@@ -307,7 +334,7 @@ pub fn yt_log_out(yt: &YtCtx) {
         let token = match t.as_ref().map(|t| t.token()) {
             Ok(Some(token)) => token,
             Ok(None) => unreachable!("tokens should always be required for the upload scope"),
-            Err(_) => todo!("handle get_token errors")
+            Err(_) => todo!("handle get_token errors"),
         };
 
         https_client()
@@ -329,19 +356,29 @@ pub struct YtAuthScreen {
 }
 
 impl YtAuthScreen {
-    pub fn new(ctx: Context, auth: AuthArc) -> Self {
+    pub fn new(ctx: Context, auth: AuthArc, msg: MessageManager) -> Self {
         let (url_send, url_recv) = Updatable::new(String::new());
         let (cancel_send, cancel_recv) = oneshot::channel();
         let keep_login = ctx
             .data_mut(|d| d.get_persisted(Id::new("ytKeepLogin")))
             .unwrap_or(true);
         spawn_async(async move {
-            match yt_auth(&ctx, url_send, cancel_recv, keep_login).await {
-                Ok(v) => {
-                    auth.write()
-                        .youtube = Some(v);
+            let auth_future = yt_auth(&ctx, url_send, keep_login);
+            tokio::select! {
+                v = auth_future => {
+                    match v {
+                        Ok(v) => {
+                            auth.write().youtube = Some(v);
+                        }
+                        Err(YtAuthErr::Outdated) => {
+                            msg.show_waiting("TouchUp must be updated to use YouTube-related features.\nThe YouTube API has made breaking changes and the current version of TouchUp can no longer interact with it.").await;
+                        }
+                    }
                 }
-                Err(_) => {}
+                // we cancel even if the receiver was dropped
+                _ = cancel_recv => {
+
+                }
             }
         });
         YtAuthScreen {
@@ -355,6 +392,8 @@ impl YtAuthScreen {
         let auth_r = auth.read();
         if auth_r.youtube.is_some() {
             return None;
+        } else if self.cancel.is_closed() {
+            return None;
         }
         ui.heading("Please log into YouTube");
         let url = self.url.get();
@@ -363,21 +402,18 @@ impl YtAuthScreen {
             if url_available {
                 if ui.button("Try again").clicked() {
                     self.pressed_try_again = true;
-                    ui.output_mut(|o| {
-                        o.open_url = Some(
-                            OpenUrl::new_tab(&url)
-                        )
-                    })
+                    ui.output_mut(|o| o.open_url = Some(OpenUrl::new_tab(&url)))
                 }
                 if self.pressed_try_again {
-                    if Label::new(RichText::new("Click to copy the login URL").color(Color32::WHITE))
+                    if Label::new(
+                        RichText::new("Click to copy the login URL").color(Color32::WHITE),
+                    )
                         .sense(Sense::hover())
                         .ui(ui)
                         .on_hover_cursor(CursorIcon::PointingHand)
-                        .clicked() {
-                        ui.output_mut(|o| {
-                            o.copied_text = url.to_string()
-                        })
+                        .clicked()
+                    {
+                        ui.output_mut(|o| o.copied_text = url.to_string())
                     }
                 }
             } else {
@@ -393,7 +429,15 @@ impl YtAuthScreen {
     }
 }
 
-pub async fn yt_upload(client: &reqwest::Client, file_name: String, mut file: tokio::fs::File, ctx: &YtCtx, title: &str, description: &str, vis: YtVisibility) {
+pub async fn yt_upload(
+    client: &reqwest::Client,
+    file_name: String,
+    mut file: tokio::fs::File,
+    ctx: &YtCtx,
+    title: &str,
+    description: &str,
+    vis: YtVisibility,
+) {
     // todo: track upload progress
     let file_len = file.seek(SeekFrom::End(0)).await.unwrap();
 
@@ -403,18 +447,19 @@ pub async fn yt_upload(client: &reqwest::Client, file_name: String, mut file: to
     let body_len = dbg!(file_len) as usize /* the vec will 100% exceed the file_len capacity, but starting at file_len is already good as it'll prevent a LOT of reallocations anyway */;
 
     let token = ctx.auth.token(&[UPLOAD_SCOPE]).await.unwrap();
-    let token = token.token()
+    let token = token
+        .token()
         .expect("successful token requests with upload scope must always return access tokens");
 
     let snippet = json!({
-                "snippet": {
-                    "title": title,
-                    "description": description,
-                },
-                "status": {
-                    "privacyStatus": vis.api_str(),
-                }
-            });
+        "snippet": {
+            "title": title,
+            "description": description,
+        },
+        "status": {
+            "privacyStatus": vis.api_str(),
+        }
+    });
     let mut attempts = 0;
 
     loop {
@@ -423,43 +468,43 @@ pub async fn yt_upload(client: &reqwest::Client, file_name: String, mut file: to
         file.seek(SeekFrom::Start(0)).await.unwrap();
 
         let f = file.try_clone().await.unwrap();
-        let form = multipart::Form::new().percent_encode_noop().part(
-            "metadata",
-            multipart::Part::bytes(metadata)
-                .headers(header_map! {
+        let form = multipart::Form::new()
+            .percent_encode_noop()
+            .part(
+                "metadata",
+                multipart::Part::bytes(metadata).headers(header_map! {
                     "content-type": "application/json; charset=UTF-8"
                 }),
-        ).part(
-            "video",
-            multipart::Part::stream(f)
-                .file_name(file_name.clone())
-                .headers(
-                    header_map! {
+            )
+            .part(
+                "video",
+                multipart::Part::stream(f)
+                    .file_name(file_name.clone())
+                    .headers(header_map! {
                         "content-type": "video/*",
                         "content-length": HeaderValue::from(file_len)
-                    }
-                ),
-        );
+                    }),
+            );
 
         // "https://www.googleapis.com/upload/youtube/v3/videos"
-        let out = client.post(&ctx.upload_url)
+        let out = client
+            .post(&ctx.upload_url)
             .multipart(form)
             .bearer_auth(token)
-            .query(&[
-                ("uploadType", "multipart"),
-                ("part", "status,snippet")
-            ]).send()
-            .await.unwrap();
+            .query(&[("uploadType", "multipart"), ("part", "status,snippet")])
+            .send()
+            .await
+            .unwrap();
 
         let status = out.status();
 
         if status.is_success() {
-            break
+            break;
         } else if (status.is_server_error() || status.is_client_error()) && attempts < 5 {
             debug!("retrying request ({status})");
             attempts += 1;
             file.seek(SeekFrom::Start(0)).await.unwrap();
-            continue // retry for error codes 5xx and 4xx
+            continue; // retry for error codes 5xx and 4xx
         } else {
             let body = out.json::<Value>().await.ok();
             if let Some(body) = body {

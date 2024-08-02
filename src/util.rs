@@ -6,6 +6,7 @@ use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use egui::Context;
 use ffmpeg::ffi::{AV_PKT_FLAG_DISCARD, av_seek_frame, AVSEEK_FLAG_BACKWARD};
 use ffmpeg::format::context::Input;
 use ffmpeg::frame::Video;
@@ -460,3 +461,30 @@ macro_rules! header_map {
         )
     };
 }
+
+// CheapClone cannot be impld for Copy types because std may add Copy for the types we manually impl CheapClone for
+//  specialization would probably save us here were it stable...
+pub trait CheapClone: Clone {
+    #[must_use = "cloning does not usually have side effects"]
+    fn cheap_clone(&self) -> Self {
+        self.clone()
+    }
+}
+
+macro_rules! cheap_clone_impl {
+    ($(
+        $(< $($param:ident),* >)?
+        $struct:path
+    ),* $(,)?) => {
+        $(
+        impl$(<$($param),*>)? CheapClone for $struct {}
+        )*
+    };
+}
+
+cheap_clone_impl!(
+    <T> Arc<T>,
+    <T> Sender<T>,
+    <T> SyncSender<T>,
+    Context,
+);

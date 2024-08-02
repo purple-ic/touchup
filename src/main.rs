@@ -1,10 +1,12 @@
 extern crate ffmpeg_next as ffmpeg;
 
-use std::fmt::Debug;
+use std::borrow::Cow;
+use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Barrier, mpsc, Mutex, OnceLock};
+use std::sync::mpsc::{SendError, TrySendError};
 use std::thread;
 use std::time::Duration;
 
@@ -20,12 +22,13 @@ use egui::epaint::TextureManager;
 use egui::panel::TopBottomSide;
 use log::{info, LevelFilter};
 use replace_with::replace_with;
+use rfd::{MessageButtons, MessageLevel};
 use serde::{Deserialize, Serialize};
 use simple_logger::SimpleLogger;
 
 use crate::editor::{Editor, EditorExit};
 use crate::select::{SelectScreen, SelectScreenOut};
-use crate::util::{plural, Updatable};
+use crate::util::{CheapClone, plural, Updatable};
 
 mod editor;
 pub mod export;
@@ -275,6 +278,9 @@ struct TouchUp {
 
     current_tex: Option<CurrentTex>,
     texture: TextureArc,
+
+    message_manager: MessageManager,
+    messages: mpsc::Receiver<String>
 }
 
 struct CurrentTex {
@@ -389,6 +395,9 @@ impl TouchUp {
     }
 
     pub fn new(cc: &CreationContext) -> Self {
+        let (msg_send, msg_recv) = mpsc::sync_channel(3);
+        let message_manager = MessageManager { sender: msg_send, ctx: cc.egui_ctx.cheap_clone() };
+
         #[cfg(any(feature = "youtube"))]
         let auth = AuthArc::new(RwLock::new(Auth {
             ctx: cc.egui_ctx.clone(),
@@ -401,10 +410,12 @@ impl TouchUp {
         let mut screen = Screen::Select(Self::select_screen(&cc.egui_ctx));
         #[cfg(feature = "youtube")]
         if youtube::yt_token_file().exists() {
+            let msg = message_manager.cheap_clone();
             // if the token file exists, attempt to log into youtube right now
             screen = Screen::YouTubeLogin(youtube::YtAuthScreen::new(
                 cc.egui_ctx.clone(),
                 AuthArc::clone(&auth),
+                msg
             ))
         }
 
@@ -420,6 +431,8 @@ impl TouchUp {
                 bytes: vec![],
                 changed: false,
             })),
+            message_manager,
+            messages: msg_recv,
         }
     }
 }
@@ -576,6 +589,7 @@ impl eframe::App for TouchUp {
                                 self.screen = Screen::YouTubeLogin(youtube::YtAuthScreen::new(
                                     ui.ctx().clone(),
                                     self.auth.clone(),
+                                    self.message_manager.cheap_clone()
                                 ))
                             }
                         },
@@ -623,6 +637,15 @@ impl eframe::App for TouchUp {
                 });
             });
         });
+
+        for message in self.messages.try_iter() {
+            rfd::MessageDialog::new()
+                .set_title("TouchUp error")
+                .set_level(MessageLevel::Error)
+                .set_description(message)
+                .set_buttons(MessageButtons::Ok)
+                .show();
+        }
     }
 
     fn clear_color(&self, _visuals: &Visuals) -> [f32; 4] {
@@ -631,5 +654,55 @@ impl eframe::App for TouchUp {
 
     fn persist_egui_memory(&self) -> bool {
         true
+    }
+}
+
+#[derive(Clone)]
+pub struct MessageManager {
+    sender: mpsc::SyncSender<String>,
+    ctx: Context,
+}
+
+#[derive(Clone, Debug)]
+pub struct MessageBufFull {
+    attempted_message: String,
+}
+
+impl CheapClone for MessageManager {}
+
+impl MessageManager {
+    pub fn show_blocking(&self, message: impl Into<String>) {
+        match self.sender.send(message.into()) {
+            Ok(()) => {
+                self.ctx.request_repaint();
+            }
+            Err(SendError(_)) => {
+                panic!("message sender disconnected. looks like the UI thread is done!")
+            }
+        }
+    }
+
+    pub fn show(&self, message: impl Into<String>) -> Result<(), MessageBufFull> {
+        match self.sender.try_send(message.into()) {
+            Ok(()) => {
+                self.ctx.request_repaint();
+                Ok(())
+            },
+            Err(TrySendError::Full(attempted_message)) => Err(MessageBufFull {
+                attempted_message
+            }),
+            Err(TrySendError::Disconnected(_)) => {
+                panic!("message sender disconnected. looks like the UI thread is done!")
+            }
+        }
+    }
+
+    #[cfg(feature = "async")]
+    pub async fn show_waiting(&self, message: impl Into<String>) {
+        let self2 = self.cheap_clone();
+        let msg = message.into();
+        tokio::task::spawn_blocking(move || {
+            self2.show_blocking(msg);
+        }).await.unwrap();
     }
 }
