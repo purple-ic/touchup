@@ -15,7 +15,11 @@ use std::thread::Scope;
 
 use eframe::emath::{Align, Vec2};
 use eframe::epaint::text::TextWrapping;
-use egui::{Button, Color32, Context, CursorIcon, FontId, Id, Image, ImageSource, include_image, Label, Layout, OpenUrl, RichText, Sense, TextBuffer, TextEdit, TextFormat, TextStyle, TextWrapMode, Ui, Widget};
+use egui::{
+    Button, Color32, Context, CursorIcon, FontId, Id, Image, ImageSource, include_image, Label,
+    Layout, OpenUrl, RichText, Sense, TextBuffer, TextEdit, TextFormat, TextStyle, TextWrapMode,
+    Ui, Widget,
+};
 use egui::text::{LayoutJob, LayoutSection};
 use egui::util::IdTypeMap;
 use futures::Stream;
@@ -37,7 +41,10 @@ use yup_oauth2::authenticator::{Authenticator, DefaultHyperClient, HyperClientBu
 use yup_oauth2::authenticator_delegate::InstalledFlowDelegate;
 use yup_oauth2::hyper_rustls::HttpsConnector;
 
-use crate::{AuthArc, header_map, https_client, infallible_unreachable, MessageManager, spawn_async, storage, Task};
+use crate::{
+    AuthArc, header_map, https_client, infallible_unreachable, MessageManager, spawn_async,
+    storage, Task,
+};
 use crate::util::{AnyExt, CheapClone, Updatable};
 
 pub enum YtInfo {
@@ -133,7 +140,10 @@ impl YtScreen {
                 {
                     finalize = true;
                 }
-                if Button::new("Cancel").ui(ui).clicked() {
+                if Button::new("Cancel")
+                    .ui(ui)
+                    .on_hover_text("Cancel the upload\nThis will also cancel the export if it still hasn't completed")
+                    .clicked() {
                     cancelled = true;
                     let _ = self.send_final.take().expect("YtScreen::draw should not be called after send_final is taken and becomes None").send(YtInfo::Cancel);
                 }
@@ -162,6 +172,10 @@ impl YtScreen {
                     description: mem::take(&mut self.description),
                     visibility,
                 });
+            } else if cancelled {
+                if let Some(task) = task {
+                    task.remove_requested = true;
+                }
             }
         });
         // whether to go back to the select menu: only if we've finalized or we've cancelled
@@ -182,16 +196,16 @@ fn tos_text(ui: &mut Ui) {
             }
 
     macro_rules! url {
-                () => {
-                    "https://www.youtube.com/t/terms"
-                };
-            }
+        () => {
+            "https://www.youtube.com/t/terms"
+        };
+    }
 
     macro_rules! suffix {
-                () => {
-                    ". Please be sure not to violate others' copyright or privacy rights."
-                };
-            }
+        () => {
+            ". Please be sure not to violate others' copyright or privacy rights."
+        };
+    }
     const PREFIX: usize = prefix!().len();
     const URL: &str = url!();
     const SUFFIX: usize = suffix!().len();
@@ -299,7 +313,7 @@ pub enum YtAuthErr {
     #[error("Could not send or parse an http request: {0}")]
     ReqwestError(#[from] reqwest::Error, Backtrace),
     #[error("Could not authenticate into YouTube: {0}")]
-    AuthErr(io::Error)
+    AuthErr(io::Error),
 }
 
 pub async fn yt_auth(
@@ -308,7 +322,8 @@ pub async fn yt_auth(
     keep_login: bool,
 ) -> Result<YtCtx, YtAuthErr> {
     let secret: ConsoleApplicationSecret =
-        serde_json::from_slice(include_bytes!("../embedded/yt_cred.json")).expect("could not parse YouTube cred json");
+        serde_json::from_slice(include_bytes!("../embedded/yt_cred.json"))
+            .expect("could not parse YouTube cred json");
 
     let client = https_client();
     let v_info = client
@@ -408,7 +423,7 @@ pub fn yt_log_out(yt: &YtCtx) {
             Err(_) => {
                 // assume the token is already invalid. just cancel
                 return;
-            },
+            }
         };
 
         https_client()
@@ -437,7 +452,8 @@ impl YtAuthScreen {
             .data_mut(|d| d.get_persisted(Id::new("ytKeepLogin")))
             .unwrap_or(true);
         spawn_async(async move {
-            let auth_future = msg.handle_err_async("logging into YouTube", yt_auth(&ctx, url_send, keep_login));
+            let auth_future =
+                msg.handle_err_async("logging into YouTube", yt_auth(&ctx, url_send, keep_login));
             tokio::select! {
                 v = auth_future => {
                     if let Some(v) = v {
