@@ -168,7 +168,7 @@ impl Player {
     }
 
     pub fn change_volume(&self, volume: f32) {
-        self.change_volume.send(volume).unwrap()
+        let _ = self.change_volume.send(volume);
     }
 
     pub fn begin_export(

@@ -137,7 +137,7 @@ impl SelectScreen {
                     .on_hover_text("Open the folder where preferences and authentication are saved.")
                     .clicked() {
                     let storage = storage();
-                    open::that_detached(storage).unwrap();
+                    open::that_detached(storage).unwrap_or_else(|e| todo!("handle open errs (got: {e})"));
                 }
             });
             ui.add_space(8.);
@@ -158,7 +158,7 @@ impl SelectScreen {
                         if ui.button("Log out of YouTube").clicked() {
                             drop(auth_r);
                             let mut auth_w = auth.write();
-                            let yt = auth_w.youtube.take().unwrap();
+                            let yt = auth_w.youtube.take().expect("youtube should not have been removed between switching lock from read -> to write");
                             youtube::yt_log_out(&yt);
                         }
                     } else {

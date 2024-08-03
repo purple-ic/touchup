@@ -10,7 +10,7 @@ use std::future::Future;
 use std::io::Stdout;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::{Arc, Barrier, mpsc, Mutex, OnceLock};
+use std::sync::{Arc, Barrier, mpsc, Mutex, MutexGuard, OnceLock, TryLockError, TryLockResult};
 use std::sync::mpsc::{SendError, TrySendError};
 use std::thread;
 use std::time::Duration;
@@ -21,11 +21,14 @@ use eframe::egui::load::TextureLoader;
 use eframe::egui_glow::{CallbackFn, check_for_gl_error};
 use eframe::epaint::PaintCallbackInfo;
 use eframe::glow::{HasContext, INVALID_ENUM, PixelUnpackData, TEXTURE_2D};
-use egui::{Align, Color32, Context, Id, ImageData, Label, Layout, ProgressBar, Rect, RichText, ScrollArea, TextureId, TopBottomPanel, ViewportBuilder, Visuals, WidgetText};
+use egui::{
+    Align, Color32, Context, Id, ImageData, Label, Layout, ProgressBar, Rect, RichText, ScrollArea,
+    TextureId, TopBottomPanel, ViewportBuilder, Visuals, WidgetText,
+};
 use egui::epaint::mutex::RwLock;
 use egui::epaint::TextureManager;
 use egui::panel::TopBottomSide;
-use log::{error, info, LevelFilter};
+use log::{debug, error, info, LevelFilter};
 use replace_with::replace_with;
 use rfd::{MessageButtons, MessageLevel};
 use serde::{Deserialize, Serialize};
@@ -51,7 +54,8 @@ pub fn https_client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .use_rustls_tls()
-            .build().unwrap()
+            .build()
+            .unwrap_or_else(|e| todo!("handle reqwest errors (got: {e})"))
     })
 }
 
@@ -69,7 +73,7 @@ pub type AuthArc = Arc<RwLock<Auth>>;
 pub type AuthArc = ();
 
 fn storage() -> PathBuf {
-    dbg!(storage_dir(APP_ID).unwrap())
+    storage_dir(APP_ID).unwrap_or_else(|| todo!())
 }
 
 const APP_ID: &'static str = "touch_up";
@@ -95,15 +99,14 @@ where
 fn main() {
     SimpleLogger::new()
         .with_colors(true)
-        .with_level(
-            if cfg!(debug_assertions) {
-                LevelFilter::Debug
-            } else {
-                LevelFilter::Warn
-            }
-        )
+        .with_threads(true)
+        .with_level(if cfg!(debug_assertions) {
+            LevelFilter::Debug
+        } else {
+            LevelFilter::Warn
+        })
         .init()
-        .unwrap();
+        .expect("could not initialize logger");
     info!("TouchUp version {VERSION}");
 
     // todo: remove this line
@@ -121,22 +124,23 @@ fn main() {
 
         let barrier = Arc::clone(&barrier);
 
-        thread::spawn(move || {
+        thread::Builder::new()
+            .name("async".into())
+            .spawn(move || {
             let runtime = runtime::Builder::new_current_thread()
                 .enable_io()
                 .enable_time()
-                .thread_name("async")
                 .build()
-                .unwrap();
+                .unwrap_or_else(|e| todo!("handle async errors (got: {e})\n note: we also have to somehow communicate this to the user correctly"));
             let guard = runtime.enter();
-            ASYNC_HANDLE.set(Handle::current()).unwrap();
+                ASYNC_HANDLE.set(Handle::current()).expect("ASYNC_HANDLE should only be set in the async thread");
             barrier.wait();
             drop(barrier);
 
             runtime.block_on(async { async_should_stop.await.unwrap() });
             drop(guard);
             println!("async shutting down")
-        });
+            }).expect("could not spoawn async thread");
     }
     ffmpeg::init().expect("could not initialize ffmpeg");
     #[cfg(feature = "async")]
@@ -159,7 +163,7 @@ fn main() {
             Ok(Box::new(TouchUp::new(cc)))
         }),
     )
-        .unwrap();
+        .expect("could not start eframe");
 
     #[cfg(feature = "async")]
     let _ = async_stop.send(());
@@ -285,7 +289,7 @@ struct TouchUp {
     texture: TextureArc,
 
     message_manager: MessageManager,
-    messages: mpsc::Receiver<String>
+    messages: mpsc::Receiver<String>,
 }
 
 struct CurrentTex {
@@ -298,27 +302,11 @@ pub type TextureArc = Arc<Mutex<PlayerTexture>>;
 
 fn set_player_texture_settings(gl: &glow::Context) {
     unsafe {
-        gl.tex_parameter_i32(
-            TEXTURE_2D,
-            glow::TEXTURE_MAG_FILTER,
-            glow::LINEAR as i32,
-        );
-        gl.tex_parameter_i32(
-            TEXTURE_2D,
-            glow::TEXTURE_MIN_FILTER,
-            glow::LINEAR as i32,
-        );
+        gl.tex_parameter_i32(TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+        gl.tex_parameter_i32(TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
 
-        gl.tex_parameter_i32(
-            TEXTURE_2D,
-            glow::TEXTURE_WRAP_S,
-            glow::CLAMP_TO_EDGE as i32,
-        );
-        gl.tex_parameter_i32(
-            TEXTURE_2D,
-            glow::TEXTURE_WRAP_T,
-            glow::CLAMP_TO_EDGE as i32,
-        );
+        gl.tex_parameter_i32(TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+        gl.tex_parameter_i32(TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
     }
     check_for_gl_error!(gl, "trying to set tex params");
 }
@@ -332,7 +320,17 @@ impl TouchUp {
             // using RGB instead of SRGB makes the images.. way brighter?
             //  kind of interesting that it makes them brighter instead of loosing quality
             //  even though the source format is still the same
-            gl.tex_image_2d(TEXTURE_2D, 0, glow::SRGB8 as i32, size[0].try_into().unwrap(), size[1].try_into().unwrap(), 0, glow::RGB, glow::UNSIGNED_BYTE, Some(data));
+            gl.tex_image_2d(
+                TEXTURE_2D,
+                0,
+                glow::SRGB8 as i32,
+                size[0].try_into().expect("could not convert size from usize to i32"),
+                size[1].try_into().expect("could not convert size from usize to i32"),
+                0,
+                glow::RGB,
+                glow::UNSIGNED_BYTE,
+                Some(data),
+            );
             gl.bind_texture(TEXTURE_2D, None);
         }
     }
@@ -351,8 +349,20 @@ impl TouchUp {
     }
 
     fn react_to_tex_update(&mut self, ctx: &Context, frame: &mut Frame) {
+        let mut tex =
+            match self.texture.try_lock() {
+                Ok(v) => v,
+                Err(TryLockError::WouldBlock) => {
+                    return
+                }
+                Err(TryLockError::Poisoned(p)) => {
+                    debug!("clearing poison from player texture mutex");
+                    self.texture.clear_poison();
+                    p.into_inner()
+                }
+            };
+
         // todo: this texture system leaves a frame or two where the last-played-frame of the previous video is visible
-        if let Ok(mut tex) = self.texture.try_lock() {
             if tex.changed {
                 tex.changed = false;
 
@@ -377,21 +387,23 @@ impl TouchUp {
                                 0,
                                 0,
                                 0,
-                                tex.size[0].try_into().unwrap(),
-                                tex.size[1].try_into().unwrap(),
+                                tex.size[0].try_into().expect("could not convert size from usize to i32"),
+                                tex.size[1].try_into().expect("could not convert size from usize to i32"),
                                 glow::RGB,
                                 glow::UNSIGNED_BYTE,
                                 PixelUnpackData::Slice(&tex.bytes),
                             );
                             gl.bind_texture(TEXTURE_2D, None);
-                            check_for_gl_error!(&gl, "while attempting to update the player texture")
+                            check_for_gl_error!(
+                                &gl,
+                                "while attempting to update the player texture"
+                            )
                         }
                     }
                 } else {
                     println!("creating texture");
                     self.current_tex = Some(Self::create_texture(tex.size, &tex.bytes, frame));
                 };
-            }
         }
     }
 
@@ -401,7 +413,10 @@ impl TouchUp {
 
     pub fn new(cc: &CreationContext) -> Self {
         let (msg_send, msg_recv) = mpsc::sync_channel(3);
-        let message_manager = MessageManager { sender: msg_send, ctx: cc.egui_ctx.cheap_clone() };
+        let message_manager = MessageManager {
+            sender: msg_send,
+            ctx: cc.egui_ctx.cheap_clone(),
+        };
 
         #[cfg(any(feature = "youtube"))]
         let auth = AuthArc::new(RwLock::new(Auth {
@@ -420,7 +435,7 @@ impl TouchUp {
             screen = Screen::YouTubeLogin(youtube::YtAuthScreen::new(
                 cc.egui_ctx.clone(),
                 AuthArc::clone(&auth),
-                msg
+                msg,
             ))
         }
 
@@ -581,7 +596,13 @@ impl eframe::App for TouchUp {
                         Screen::Select(select) => match select.draw(ui, frame, &self.auth) {
                             SelectScreenOut::Stay => {}
                             SelectScreenOut::Edit(to_open) => {
-                                match Editor::new(ctx, self.message_manager.cheap_clone(), to_open, frame, Arc::clone(&self.texture)) {
+                                match Editor::new(
+                                    ctx,
+                                    self.message_manager.cheap_clone(),
+                                    to_open,
+                                    frame,
+                                    Arc::clone(&self.texture),
+                                ) {
                                     None => {}
                                     Some(screen) => {
                                         self.screen = Screen::Edit(screen);
@@ -594,7 +615,7 @@ impl eframe::App for TouchUp {
                                 self.screen = Screen::YouTubeLogin(youtube::YtAuthScreen::new(
                                     ui.ctx().clone(),
                                     self.auth.clone(),
-                                    self.message_manager.cheap_clone()
+                                    self.message_manager.cheap_clone(),
                                 ))
                             }
                         },
@@ -604,8 +625,7 @@ impl eframe::App for TouchUp {
                                 &self.auth,
                                 ui,
                                 &self.task_cmd_sender,
-                                self.current_tex.as_ref()
-                                    .map(|CurrentTex { id, .. }| id),
+                                self.current_tex.as_ref().map(|CurrentTex { id, .. }| id),
                             ) {
                                 None => {}
                                 Some(EditorExit::ToSelectScreen) => {
@@ -692,10 +712,8 @@ impl MessageManager {
             Ok(()) => {
                 self.ctx.request_repaint();
                 Ok(())
-            },
-            Err(TrySendError::Full(attempted_message)) => Err(MessageBufFull {
-                attempted_message
-            }),
+            }
+            Err(TrySendError::Full(attempted_message)) => Err(MessageBufFull { attempted_message }),
             Err(TrySendError::Disconnected(_)) => {
                 panic!("message sender disconnected. looks like the UI thread is done!")
             }
@@ -708,7 +726,9 @@ impl MessageManager {
         let msg = message.into();
         tokio::task::spawn_blocking(move || {
             self2.show_blocking(msg);
-        }).await.unwrap();
+        })
+            .await
+            .unwrap();
     }
 
     fn _handle_err<E: Error>(&self, stage: &str, err: E) {
@@ -719,12 +739,14 @@ impl MessageManager {
         } else {
             error!("(no backtrace) error at stage `{stage}`: {err}")
         }
-        self.show_blocking(
-            format!("An error occurred while {stage}:\n{err}")
-        );
+        self.show_blocking(format!("An error occurred while {stage}:\n{err}"));
     }
 
-    pub fn handle_err<E: Error, R>(&self, stage: &str, func: impl FnOnce(&Self) -> Result<R, E>) -> Option<R> {
+    pub fn handle_err<E: Error, R>(
+        &self,
+        stage: &str,
+        func: impl FnOnce(&Self) -> Result<R, E>,
+    ) -> Option<R> {
         match func(self) {
             Ok(v) => Some(v),
             Err(err) => {
@@ -742,7 +764,11 @@ impl MessageManager {
     // }
 
     #[cfg(feature = "async")]
-    pub async fn handle_err_async<E: Error + Send + 'static, R>(&self, stage: impl AsRef<str> + Send + 'static, future: impl Future<Output=Result<R, E>>) -> Option<R> {
+    pub async fn handle_err_async<E: Error + Send + 'static, R>(
+        &self,
+        stage: impl AsRef<str> + Send + 'static,
+        future: impl Future<Output=Result<R, E>>,
+    ) -> Option<R> {
         match future.await {
             Ok(v) => Some(v),
             Err(err) => {
@@ -750,7 +776,9 @@ impl MessageManager {
                 tokio::task::spawn_blocking(move || {
                     let stage = stage;
                     self2._handle_err(stage.as_ref(), err);
-                }).await.expect("_handle_err should not panic");
+                })
+                    .await
+                    .expect("_handle_err should not panic");
                 None
             }
         }
@@ -762,10 +790,12 @@ impl MessageManager {
     }
 
     #[cfg(feature = "async")]
-    pub fn handle_err_spawn<E: Error + Send + 'static, R: Send + 'static>(&self, stage: impl AsRef<str> + Send + 'static, future: impl Future<Output=Result<R, E>> + Send + 'static) -> tokio::task::JoinHandle<Option<R>> {
+    pub fn handle_err_spawn<E: Error + Send + 'static, R: Send + 'static>(
+        &self,
+        stage: impl AsRef<str> + Send + 'static,
+        future: impl Future<Output=Result<R, E>> + Send + 'static,
+    ) -> tokio::task::JoinHandle<Option<R>> {
         let msg = self.cheap_clone();
-        spawn_async(async move {
-            msg.handle_err_async(stage, future).await
-        })
+        spawn_async(async move { msg.handle_err_async(stage, future).await })
     }
 }

@@ -3,8 +3,7 @@ use std::cmp::Ordering;
 use std::error::Error;
 use std::ffi::c_int;
 use std::ops::ControlFlow;
-use std::rc::Rc;
-use std::sync::{Arc, mpsc, Once};
+use std::sync::{Arc, mpsc, Mutex, MutexGuard, Once};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -510,5 +509,14 @@ pub fn result2flow<T, E>(result: Result<T, E>) -> ControlFlow<E, T> {
     match result {
         Ok(v) => ControlFlow::Continue(v),
         Err(e) => ControlFlow::Break(e)
+    }
+}
+
+pub fn lock_ignore_poison<'a, T>(mutex: &'a Mutex<T>) -> MutexGuard<'a, T> {
+    match mutex.lock() {
+        Ok(v) => v,
+        Err(p) => {
+            p.into_inner()
+        }
     }
 }

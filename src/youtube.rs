@@ -1,6 +1,7 @@
 #![cfg(feature = "youtube")]
 
 use std::{fs, io, iter, mem};
+use std::backtrace::Backtrace;
 use std::borrow::Cow;
 use std::error::Error;
 use std::fmt::Write;
@@ -20,11 +21,12 @@ use egui::{
 use egui::util::IdTypeMap;
 use futures::Stream;
 use futures_util::StreamExt;
-use log::debug;
+use log::{debug, error};
 use reqwest::{Body, multipart};
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use thiserror::Error;
 use tokio::io::AsyncSeekExt;
 use tokio::sync::oneshot;
 use tokio::task::spawn_blocking;
@@ -126,7 +128,7 @@ impl YtScreen {
                 }
                 if Button::new("Cancel").ui(ui).clicked() {
                     cancelled = true;
-                    let _ = self.send_final.take().unwrap().send(YtInfo::Cancel);
+                    let _ = self.send_final.take().expect("YtScreen::draw should not be called after send_final is taken and becomes None").send(YtInfo::Cancel);
                 }
             });
             ui.add_space(8.);
@@ -146,7 +148,7 @@ impl YtScreen {
                     task.name.clone_from(&self.title);
                 }
 
-                let _ = self.send_final.take().unwrap().send(YtInfo::Continue {
+                let _ = self.send_final.take().expect("YtScreen::draw should not be called after send_final is taken and becomes None").send(YtInfo::Continue {
                     title: mem::take(&mut self.title),
                     description: mem::take(&mut self.description),
                     visibility,
@@ -226,8 +228,15 @@ struct YtVInfo {
 
 pub const UPLOAD_SCOPE: &str = "https://www.googleapis.com/auth/youtube.upload";
 
+#[derive(Error, Debug)]
 pub enum YtAuthErr {
+    #[error("TouchUp must be updated to use YouTube-related features.\nThe YouTube API has made breaking changes and the current version of TouchUp can no longer interact with it."
+    )]
     Outdated,
+    #[error("Could not send or parse an http request: {0}")]
+    ReqwestError(#[from] reqwest::Error, Backtrace),
+    #[error("Could not authenticate into YouTube: {0}")]
+    AuthErr(io::Error)
 }
 
 pub async fn yt_auth(
@@ -236,7 +245,7 @@ pub async fn yt_auth(
     keep_login: bool,
 ) -> Result<YtCtx, YtAuthErr> {
     let secret: ConsoleApplicationSecret =
-        serde_json::from_slice(include_bytes!("../embedded/yt_cred.json")).unwrap();
+        serde_json::from_slice(include_bytes!("../embedded/yt_cred.json")).expect("could not parse YouTube cred json");
 
     let client = https_client();
     let v_info = client
@@ -246,11 +255,9 @@ pub async fn yt_auth(
         .header("Accept", "application/vnd.github.raw+json")
         .bearer_auth(env!("GH_TOKEN_TODO_REMOVE"))
         .send()
-        .await
-        .unwrap()
+        .await?
         .json::<YtVInfo>()
-        .await
-        .unwrap();
+        .await?;
     debug!("yt version info: {v_info:?}");
     if v_info.outdated {
         spawn_blocking(|| {
@@ -297,7 +304,7 @@ pub async fn yt_auth(
         }))
         .build()
         .await
-        .unwrap();
+        .map_err(YtAuthErr::AuthErr)?;
 
     // try to cache the token for the upload scope
     let _ = auth.token(&[UPLOAD_SCOPE]).await;
@@ -365,16 +372,11 @@ impl YtAuthScreen {
             .data_mut(|d| d.get_persisted(Id::new("ytKeepLogin")))
             .unwrap_or(true);
         spawn_async(async move {
-            let auth_future = yt_auth(&ctx, url_send, keep_login);
+            let auth_future = msg.handle_err_async("logging into YouTube", yt_auth(&ctx, url_send, keep_login));
             tokio::select! {
                 v = auth_future => {
-                    match v {
-                        Ok(v) => {
-                            auth.write().youtube = Some(v);
-                        }
-                        Err(YtAuthErr::Outdated) => {
-                            msg.show_async("TouchUp must be updated to use YouTube-related features.\nThe YouTube API has made breaking changes and the current version of TouchUp can no longer interact with it.").await;
-                        }
+                    if let Some(v) = v {
+                        auth.write().youtube = Some(v);
                     }
                 }
                 // we cancel even if the receiver was dropped
@@ -431,6 +433,18 @@ impl YtAuthScreen {
     }
 }
 
+#[derive(Error, Debug)]
+pub enum YtUploadError {
+    #[error("IO error: {0}")]
+    Io(#[from] tokio::io::Error, Backtrace),
+    #[error("HTTP error: {0}")]
+    Reqwest(#[from] reqwest::Error, Backtrace),
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error, Backtrace),
+    #[error("Authentication error: {0}")]
+    Auth(#[from] yup_oauth2::Error, Backtrace),
+}
+
 pub async fn yt_upload(
     client: &reqwest::Client,
     file_name: String,
@@ -439,16 +453,16 @@ pub async fn yt_upload(
     title: &str,
     description: &str,
     vis: YtVisibility,
-) {
+) -> Result<(), YtUploadError> {
     // todo: track upload progress
-    let file_len = file.seek(SeekFrom::End(0)).await.unwrap();
+    let file_len = file.seek(SeekFrom::End(0)).await?;
 
     // these docs are for google drive but the same multipart method applies to the youtube api
     // https://developers.google.com/drive/api/guides/manage-uploads#multipart
 
     let body_len = dbg!(file_len) as usize /* the vec will 100% exceed the file_len capacity, but starting at file_len is already good as it'll prevent a LOT of reallocations anyway */;
 
-    let token = ctx.auth.token(&[UPLOAD_SCOPE]).await.unwrap();
+    let token = ctx.auth.token(&[UPLOAD_SCOPE]).await?;
     let token = token
         .token()
         .expect("successful token requests with upload scope must always return access tokens");
@@ -466,10 +480,10 @@ pub async fn yt_upload(
 
     loop {
         debug!("starting yt upload...");
-        let metadata = serde_json::to_vec(&snippet).unwrap();
-        file.seek(SeekFrom::Start(0)).await.unwrap();
+        let metadata = serde_json::to_vec(&snippet)?;
+        file.seek(SeekFrom::Start(0)).await?;
 
-        let f = file.try_clone().await.unwrap();
+        let f = file.try_clone().await?;
         let form = multipart::Form::new()
             .percent_encode_noop()
             .part(
@@ -496,17 +510,16 @@ pub async fn yt_upload(
             .bearer_auth(token)
             .query(&[("uploadType", "multipart"), ("part", "status,snippet")])
             .send()
-            .await
-            .unwrap();
+            .await?;
 
         let status = out.status();
 
         if status.is_success() {
-            break;
+            return Ok(());
         } else if (status.is_server_error() || status.is_client_error()) && attempts < 5 {
-            debug!("retrying request ({status})");
+            debug!("retrying request ({status}). made {attempts} previous attempts");
             attempts += 1;
-            file.seek(SeekFrom::Start(0)).await.unwrap();
+            file.seek(SeekFrom::Start(0)).await?;
             continue; // retry for error codes 5xx and 4xx
         } else {
             let body = out.json::<Value>().await.ok();

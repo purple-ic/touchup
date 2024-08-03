@@ -25,7 +25,7 @@ use crate::export::ExportError::NoVideoStream;
 use crate::player::r#impl::sec2ts;
 #[cfg(feature = "async")]
 use crate::spawn_async;
-use crate::util::{precise_seek, RationalExt, rescale};
+use crate::util::{lock_ignore_poison, precise_seek, RationalExt, rescale, result2flow};
 use crate::util::CheapClone;
 
 #[derive(Default)]
@@ -278,7 +278,7 @@ pub fn video_transcoder(
     if global_header {
         encoder.set_flags(codec::Flags::GLOBAL_HEADER);
     }
-    let mut encoder = encoder.open_as(codec::id::Id::None)?;
+    let mut encoder = encoder.open_as(codec)?;
     out_stream.set_parameters(&encoder);
 
     let mut frame = VideoFrame::empty();
@@ -313,39 +313,42 @@ struct Transcoder<Fr: Deref<Target=Frame> + DerefMut, Fn: FnMut(&mut Fr)> {
 }
 
 impl<Fr: Deref<Target=Frame> + DerefMut, Fn: FnMut(&mut Fr)> Transcoder<Fr, Fn> {
-    fn send_packets(&mut self, packet: &mut Packet, output: &mut Output) {
+    fn send_packets(&mut self, packet: &mut Packet, output: &mut Output) -> Result<(), ffmpeg_next::Error> {
         while self.encoder.receive_packet(packet).is_ok() {
             packet.set_stream(self.out_stream_idx);
-            packet.write_interleaved(output).unwrap()
+            packet.write_interleaved(output)?;
         }
+        Ok(())
     }
 
-    fn process_frames(&mut self, packet: &mut Packet, output: &mut Output) -> ControlFlow<()> {
+    fn process_frames(&mut self, packet: &mut Packet, output: &mut Output) -> ControlFlow<Option<ffmpeg_next::Error>> {
         while self.decoder.receive_frame(&mut self.frame).is_ok() {
             let old_pts = self.frame.pts().unwrap_or_else(|| todo!());
             if old_pts >= self.end {
-                return Break(());
+                return Break(None);
             }
             let new_pts = old_pts.saturating_sub(self.start).at_least(0);
             self.frame.set_pts(Some(new_pts));
             (self.apply_frame_extra)(&mut self.frame);
 
-            self.encoder.send_frame(&self.frame).unwrap();
-            self.send_packets(packet, output);
+            result2flow(self.encoder.send_frame(&self.frame).map_err(Some))?;
+            result2flow(self.send_packets(packet, output).map_err(Some))?;
         }
         Continue(())
     }
 
-    pub fn eof(&mut self, packet: &mut Packet, output: &mut Output) {
-        self.decoder.send_eof().unwrap();
-        self.process_frames(packet, output);
-        self.encoder.send_eof().unwrap();
+    pub fn eof(&mut self, packet: &mut Packet, output: &mut Output) -> Result<(), ffmpeg_next::Error> {
+        self.decoder.send_eof()?;
+        if let Break(Some(err)) = self.process_frames(packet, output) {
+            return Err(err)
+        }
+        self.encoder.send_eof()?;
         self.send_packets(packet, output)
     }
 
-    pub fn receive_packet(&mut self, output: &mut Output, packet: &mut Packet) -> ControlFlow<()> {
+    pub fn receive_packet(&mut self, output: &mut Output, packet: &mut Packet) -> ControlFlow<Option<ffmpeg_next::Error>> {
         debug_assert_eq!(packet.stream(), self.in_stream_idx);
-        self.decoder.send_packet(packet);
+        result2flow(self.decoder.send_packet(packet).map_err(Some))?;
         self.process_frames(packet, output)
     }
 }
@@ -403,7 +406,7 @@ pub fn export(
         has_follow_up: !is_final_stage,
     };
 
-    let lock = TASK_LOCK.lock().unwrap();
+    let lock = lock_ignore_poison(&TASK_LOCK);
 
     while (video.is_some() || (audio.is_some() && audio_stream_idx.is_some())) && packet.read(input).is_ok() {
         let packet_pts = packet.pts();
@@ -427,31 +430,37 @@ pub fn export(
                     }
                 }
 
-                if transcoder
+                if let Break(r) = transcoder
                     .receive_packet(&mut output, &mut packet)
-                    .is_break()
                 {
-                    transcoder.eof(&mut packet, &mut output);
+                    if let Some(err) = r {
+                        return Err(err.into())
+                    }
+
+                    transcoder.eof(&mut packet, &mut output)?;
                     video = None;
                 }
             }
         } else if Some(stream) == audio_stream_idx {
             if let Some(transcoder) = &mut audio {
-                if transcoder
+                if let Break(r) = transcoder
                     .receive_packet(&mut output, &mut packet)
-                    .is_break()
                 {
-                    transcoder.eof(&mut packet, &mut output);
+                    if let Some(err) = r {
+                        return Err(err.into())
+                    }
+
+                    transcoder.eof(&mut packet, &mut output)?;
                     audio = None;
                 }
             }
         }
     }
     if let Some(transcoder) = &mut video {
-        transcoder.eof(&mut packet, &mut output);
+        transcoder.eof(&mut packet, &mut output)?;
     }
     if let Some(transcoder) = &mut audio {
-        transcoder.eof(&mut packet, &mut output);
+        transcoder.eof(&mut packet, &mut output)?;
     }
     drop((video, audio));
     output.write_trailer()?;
