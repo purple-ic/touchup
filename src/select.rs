@@ -9,6 +9,7 @@ use rfd::{MessageButtons, MessageDialog, MessageLevel};
 use SelectScreenOut::*;
 
 use crate::{AuthArc, storage};
+use crate::util::report_err;
 
 pub struct SelectScreen {
     // dir_reader: OwnedThreads,
@@ -137,7 +138,16 @@ impl SelectScreen {
                     .on_hover_text("Open the folder where preferences and authentication are saved.")
                     .clicked() {
                     let storage = storage();
-                    open::that_detached(storage).unwrap_or_else(|e| todo!("handle open errs (got: {e})"));
+
+                    if let Err(e) = open::that_detached(storage) {
+                        report_err("attempting to open data folder", &e);
+                        MessageDialog::new()
+                            .set_title("TouchUp error")
+                            .set_buttons(MessageButtons::Ok)
+                            .set_description(format!("Could not open data folder: \n{e}"))
+                            .set_parent(frame)
+                            .show();
+                    }
                 }
             });
             ui.add_space(8.);

@@ -310,7 +310,6 @@ pub async fn yt_auth(
     let _ = auth.token(&[UPLOAD_SCOPE]).await;
 
     ctx.data_mut(|d| d.remove_by_type::<LoginUrl>());
-    // todo: allow updating the upload_url with an api
     Ok(YtCtx {
         auth,
         upload_url: v_info.upload_url,
@@ -343,7 +342,10 @@ pub fn yt_log_out(yt: &YtCtx) {
         let token = match t.as_ref().map(|t| t.token()) {
             Ok(Some(token)) => token,
             Ok(None) => unreachable!("tokens should always be required for the upload scope"),
-            Err(_) => todo!("handle get_token errors"),
+            Err(_) => {
+                // assume the token is already invalid. just cancel
+                return;
+            },
         };
 
         https_client()

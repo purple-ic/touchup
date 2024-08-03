@@ -1,6 +1,7 @@
 use std::{iter, mem, thread};
+use std::backtrace::{Backtrace, BacktraceStatus};
 use std::cmp::Ordering;
-use std::error::Error;
+use std::error::{Error, request_ref};
 use std::ffi::c_int;
 use std::ops::ControlFlow;
 use std::sync::{Arc, mpsc, Mutex, MutexGuard, Once};
@@ -16,6 +17,7 @@ use ffmpeg::packet::Mut;
 use ffmpeg::Rational;
 use ffmpeg::sys::av_rescale_q;
 use ffmpeg_next::codec::decoder::video::Video as VideoDecoder;
+use log::error;
 
 #[cfg(feature = "async")]
 pub use async_util::*;
@@ -518,5 +520,15 @@ pub fn lock_ignore_poison<'a, T>(mutex: &'a Mutex<T>) -> MutexGuard<'a, T> {
         Err(p) => {
             p.into_inner()
         }
+    }
+}
+
+pub fn report_err(action: &str, err: &impl Error) {
+    let backtrace = request_ref::<Backtrace>(err)
+        .filter(|b| matches!(b.status(), BacktraceStatus::Captured));
+    if let Some(backtrace) = backtrace {
+        error!("error while `{action}`: {err}\n{}", backtrace)
+    } else {
+        error!("(no backtrace) error while `{action}`: {err}")
     }
 }

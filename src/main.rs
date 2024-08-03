@@ -36,7 +36,7 @@ use simple_logger::SimpleLogger;
 
 use crate::editor::{Editor, EditorExit};
 use crate::select::{SelectScreen, SelectScreenOut};
-use crate::util::{CheapClone, plural, Updatable};
+use crate::util::{CheapClone, plural, report_err, Updatable};
 
 mod editor;
 pub mod export;
@@ -108,9 +108,6 @@ fn main() {
         .init()
         .expect("could not initialize logger");
     info!("TouchUp version {VERSION}");
-
-    // todo: remove this line
-    storage();
 
     #[cfg(feature = "async")]
     let barrier = Arc::new(Barrier::new(2));
@@ -732,13 +729,7 @@ impl MessageManager {
     }
 
     fn _handle_err<E: Error>(&self, stage: &str, err: E) {
-        let backtrace = request_ref::<Backtrace>(&err)
-            .filter(|b| matches!(b.status(), BacktraceStatus::Captured));
-        if let Some(backtrace) = backtrace {
-            error!("error at stage `{stage}`: {err}\n{}", backtrace)
-        } else {
-            error!("(no backtrace) error at stage `{stage}`: {err}")
-        }
+        report_err(stage, &err);
         self.show_blocking(format!("An error occurred while {stage}:\n{err}"));
     }
 
