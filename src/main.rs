@@ -486,7 +486,7 @@ fn draw_tasks(
 
     tasks.retain_mut(|task| {
         let status = task.status.get();
-        !status.is_finished() && !task.remove_requested
+        !status.is_finished() && !task.remove_requested && !task.status.is_closed()
     });
 
     if !tasks.is_empty() {
