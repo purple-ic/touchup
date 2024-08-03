@@ -1,8 +1,9 @@
-use std::{iter, mem, thread};
+use std::{fmt, iter, mem, thread};
 use std::backtrace::{Backtrace, BacktraceStatus};
 use std::cmp::Ordering;
 use std::error::{Error, request_ref};
 use std::ffi::c_int;
+use std::fmt::{Display, Formatter};
 use std::ops::ControlFlow;
 use std::sync::{Arc, mpsc, Mutex, MutexGuard, Once};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError};
@@ -530,5 +531,13 @@ pub fn report_err(action: &str, err: &impl Error) {
         error!("error while `{action}`: {err}\n{}", backtrace)
     } else {
         error!("(no backtrace) error while `{action}`: {err}")
+    }
+}
+
+pub struct FnDisplay<F: Fn(&mut Formatter) -> fmt::Result>(pub F);
+
+impl<F: Fn(&mut Formatter) -> fmt::Result> Display for FnDisplay<F> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        (self.0)(f)
     }
 }

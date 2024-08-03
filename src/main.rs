@@ -35,6 +35,7 @@ use serde::{Deserialize, Serialize};
 use simple_logger::SimpleLogger;
 
 use crate::editor::{Editor, EditorExit};
+use crate::logging::init_logging;
 use crate::select::{SelectScreen, SelectScreenOut};
 use crate::util::{CheapClone, plural, report_err, Updatable};
 
@@ -44,6 +45,7 @@ pub mod player;
 mod select;
 mod util;
 mod youtube;
+mod logging;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -97,16 +99,7 @@ where
 }
 
 fn main() {
-    SimpleLogger::new()
-        .with_colors(true)
-        .with_threads(true)
-        .with_level(if cfg!(debug_assertions) {
-            LevelFilter::Debug
-        } else {
-            LevelFilter::Warn
-        })
-        .init()
-        .expect("could not initialize logger");
+    init_logging();
     info!("TouchUp version {VERSION}");
 
     #[cfg(feature = "async")]
