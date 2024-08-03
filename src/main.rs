@@ -117,19 +117,19 @@ fn main() {
         thread::Builder::new()
             .name("async".into())
             .spawn(move || {
-            let runtime = runtime::Builder::new_current_thread()
-                .enable_io()
-                .enable_time()
-                .build()
-                .unwrap_or_else(|e| todo!("handle async errors (got: {e})\n note: we also have to somehow communicate this to the user correctly"));
-            let guard = runtime.enter();
+                let runtime = runtime::Builder::new_current_thread()
+                    .enable_io()
+                    .enable_time()
+                    .build()
+                    .unwrap_or_else(|e| todo!("handle async errors (got: {e})\n note: we also have to somehow communicate this to the user correctly"));
+                let guard = runtime.enter();
                 ASYNC_HANDLE.set(Handle::current()).expect("ASYNC_HANDLE should only be set in the async thread");
-            barrier.wait();
-            drop(barrier);
+                barrier.wait();
+                drop(barrier);
 
-            runtime.block_on(async { async_should_stop.await.unwrap() });
-            drop(guard);
-            println!("async shutting down")
+                runtime.block_on(async { async_should_stop.await.unwrap() });
+                drop(guard);
+                info!("async shutting down")
             }).expect("could not spoawn async thread");
     }
     ffmpeg::init().expect("could not initialize ffmpeg");
@@ -358,7 +358,7 @@ impl TouchUp {
 
                 if let Some(current_tex) = &mut self.current_tex {
                     if current_tex.size != tex.size {
-                        println!("texture resizing");
+                        debug!("player texture resizing");
 
                         current_tex.size = tex.size;
                         let gl = frame.gl().unwrap();
@@ -391,7 +391,7 @@ impl TouchUp {
                         }
                     }
                 } else {
-                    println!("creating texture");
+                    info!("creating player texture");
                     self.current_tex = Some(Self::create_texture(tex.size, &tex.bytes, frame));
                 };
         }

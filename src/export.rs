@@ -17,6 +17,7 @@ use ffmpeg::format::context::{Input, Output};
 use ffmpeg::format::output;
 use ffmpeg::frame::{Audio as AudioFrame, Video as VideoFrame};
 use ffmpeg::sys::AV_TIME_BASE_Q;
+use log::info;
 use thiserror::Error;
 use tokio::task::spawn_blocking;
 
@@ -118,7 +119,7 @@ impl ExportFollowUp {
                                 stage: TaskStage::YtUpload,
                                 progress: 1.,
                             }).unwrap();
-                            println!("finished uploading");
+                            info!("finished uploading");
 
                             spawn_blocking(move || {
                                 if should_delete {

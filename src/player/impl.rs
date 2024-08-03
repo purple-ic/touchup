@@ -29,6 +29,7 @@ use ffmpeg_next::codec::decoder::audio::Audio as AudioDecoder;
 use ffmpeg_next::codec::decoder::video::Video as VideoDecoder;
 use ffmpeg_next::software::resampling::context::Context as Resampler;
 use ffmpeg_next::software::scaling::Context as Scaler;
+use log::{debug, trace};
 use rodio::{OutputStream, Sink, Source};
 use thiserror::Error;
 
@@ -471,7 +472,7 @@ impl Player {
         //      account for the runtime ramifications of dropping our
         //      audio streams (that disconnects the stream and turns off the sound)
         drop((audio_output_stream, audio_output));
-        println!("ending video thread");
+        debug!("ending video thread");
         Ok(())
     }
 }
@@ -499,7 +500,7 @@ fn next_packet(
                 send.try_send(packet);
                 continue;
             } else {
-                println!("{}", packet_stream.index());
+                // println!("{}", packet_stream.index());
                 continue;
             }
         }
@@ -634,7 +635,7 @@ impl VideoManager {
         };
         self.time_updater.send(self.time);
         self.gui_ctx.request_repaint();
-        println!("jumped {:?}", time_diff(new_frame_time, anchor_old));
+        debug!("jumped {:?}", time_diff(new_frame_time, anchor_old));
 
         Ok(())
     }
@@ -877,7 +878,7 @@ impl VideoManager {
                     }
                     #[cfg(print_fps)]
                     {
-                        println!("{}fps", self.frame_counter.frame());
+                        trace!("{}fps", self.frame_counter.frame());
                     }
                     break;
                 } else {
