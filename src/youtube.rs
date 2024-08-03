@@ -72,61 +72,6 @@ impl YtScreen {
         //         style.wrap_mode = Some(TextWrapMode::Wrap)
         //     }
 
-
-        ui.scope(|ui| {
-            {
-                let style = ui.style_mut();
-                style.visuals.hyperlink_color = Color32::TRANSPARENT;
-            }
-
-            macro_rules! prefix {
-                () => {
-                    "By clicking 'Upload', you certify that the content you are uploading complies with the YouTube Terms of Service (including the YouTube Community Guidelines) at "
-                };
-            }
-
-            macro_rules! url {
-                () => {
-                    "https://www.youtube.com/t/terms"
-                };
-            }
-
-            macro_rules! suffix {
-                () => {
-                    ". Please be sure not to violate others' copyright or privacy rights."
-                };
-            }
-            const PREFIX: usize = prefix!().len();
-            const URL: &str = url!();
-            const SUFFIX: usize = suffix!().len();
-            let font = FontId::proportional(10.);
-
-            let text = LayoutJob {
-                text: concat!(prefix!(), url!(), suffix!()).into(),
-                sections: vec![
-                    LayoutSection {
-                        leading_space: 0.,
-                        byte_range: 0..(PREFIX),
-                        format: TextFormat::simple(font.cheap_clone(), Color32::GRAY),
-                    },
-                    LayoutSection {
-                        leading_space: 0.,
-                        byte_range: PREFIX..(PREFIX + URL.len()),
-                        format: TextFormat::simple(font.cheap_clone(), Color32::LIGHT_GRAY),
-                    },
-                    LayoutSection {
-                        leading_space: 0.,
-                        byte_range: (PREFIX + URL.len())..(PREFIX + URL.len() + SUFFIX),
-                        format: TextFormat::simple(font, Color32::GRAY),
-                    },
-                ],
-                wrap: TextWrapping::wrap_at_width(ui.available_width()),
-                ..Default::default()
-            };
-            ui.hyperlink_to(text, URL);
-            ui.add_space(4.);
-        });
-
         let mut visibility: YtVisibility = ui
             .ctx()
             .data_mut(|d| d.get_persisted(Id::new("ytInfoVis")))
@@ -175,8 +120,9 @@ impl YtScreen {
                 .hint_text("Video title")
                 .ui(ui);
         });
+
         ui.add_space(8.);
-        ui.with_layout(Layout::bottom_up(Align::Max), |ui| {
+        ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
             ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
                 if Button::image_and_text(include_image!("../embedded/checkmark.svg"), "Upload")
                     .ui(ui)
@@ -192,11 +138,13 @@ impl YtScreen {
                     let _ = self.send_final.take().expect("YtScreen::draw should not be called after send_final is taken and becomes None").send(YtInfo::Cancel);
                 }
             });
-            ui.add_space(8.);
+            ui.scope(tos_text);
+
             TextEdit::multiline(&mut self.description)
                 .min_size(ui.available_size())
                 .hint_text("Video description")
                 .ui(ui);
+            ui.add_space(8.);
 
             let task = tasks.iter_mut().find(|t| t.id == self.task_id);
 
@@ -219,6 +167,60 @@ impl YtScreen {
         // whether to go back to the select menu: only if we've finalized or we've cancelled
         finalize | cancelled
     }
+}
+
+fn tos_text(ui: &mut Ui) {
+    {
+        let style = ui.style_mut();
+        style.visuals.hyperlink_color = Color32::TRANSPARENT;
+    }
+
+    macro_rules! prefix {
+                () => {
+                    "By clicking 'Upload', you certify that the content you are uploading complies with the YouTube Terms of Service (including the YouTube Community Guidelines) at "
+                };
+            }
+
+    macro_rules! url {
+                () => {
+                    "https://www.youtube.com/t/terms"
+                };
+            }
+
+    macro_rules! suffix {
+                () => {
+                    ". Please be sure not to violate others' copyright or privacy rights."
+                };
+            }
+    const PREFIX: usize = prefix!().len();
+    const URL: &str = url!();
+    const SUFFIX: usize = suffix!().len();
+    let font = FontId::proportional(10.);
+
+    let text = LayoutJob {
+        text: concat!(prefix!(), url!(), suffix!()).into(),
+        sections: vec![
+            LayoutSection {
+                leading_space: 0.,
+                byte_range: 0..PREFIX,
+                format: TextFormat::simple(font.cheap_clone(), Color32::GRAY),
+            },
+            LayoutSection {
+                leading_space: 0.,
+                byte_range: PREFIX..(PREFIX + URL.len()),
+                format: TextFormat::simple(font.cheap_clone(), Color32::LIGHT_GRAY),
+            },
+            LayoutSection {
+                leading_space: 0.,
+                byte_range: (PREFIX + URL.len())..(PREFIX + URL.len() + SUFFIX),
+                format: TextFormat::simple(font, Color32::GRAY),
+            },
+        ],
+        wrap: TextWrapping::wrap_at_width(ui.available_width()),
+        ..Default::default()
+    };
+    ui.hyperlink_to(text, URL);
+    ui.add_space(4.);
 }
 
 #[derive(Copy, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
