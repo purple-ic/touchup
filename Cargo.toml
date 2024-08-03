@@ -19,9 +19,17 @@ simple_logger = { version = "5.0.0", features = ["threads"] }
 # make sure the egui, eframe and egui_extras versions are the same!
 egui = { version = "0.28.1", features = ["persistence", "serde"] }
 eframe = { version = "0.28.1", features = ["persistence", "serde"] }
-egui_extras = { version = "0.28.1", default-features = false, features = ["svg", "serde"] }
+egui_extras = { version = "0.28.1", default-features = false, features = [
+  "svg",
+  "serde",
+] }
 
-ffmpeg-next = { version = "7.0.2", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
+ffmpeg-next = { version = "7.0.2", default-features = false, features = [
+  "codec",
+  "format",
+  "software-resampling",
+  "software-scaling",
+] }
 rodio = { version = "0.19.0", default-features = false }
 futures = { version = "0.3.30", optional = true }
 futures-util = { version = "0.3.30", optional = true }
@@ -37,10 +45,16 @@ replace_with = "0.1.7"
 
 # yup_oauth2 is an oauth2 library for google apis
 yup-oauth2 = { version = "11.0.0", optional = true }
-reqwest = { version = "0.12.5", optional = true, default-features = false, features = ["rustls-tls-native-roots", "http2", "macos-system-configuration"] }
+reqwest = { version = "0.12.5", optional = true, default-features = false, features = [
+  "rustls-tls-native-roots",
+  "http2",
+  "macos-system-configuration",
+] }
 
 serde_json = { version = "1.0.120", optional = true }
-tokio = { version = "1.38.1", features = ["rt"], default-features = false, optional = true }
+tokio = { version = "1.38.1", features = [
+  "rt",
+], default-features = false, optional = true }
 tokio-util = { version = "0.7.11", default-features = false, optional = true }
 serde = { version = "1.0.203", features = ["derive"] }
 
@@ -62,9 +76,22 @@ default = ["youtube"]
 # enables youtube uploading
 #   if disabled, the upload to youtube button won't appear at all.
 #   depends on the `async` feature
-youtube = ["async", "dep:yup-oauth2", "dep:serde_json", "tokio/fs", "reqwest", "reqwest/stream", "reqwest/json", "reqwest/multipart", "tokio-util/io"]
+youtube = [
+  "async",
+  "dep:yup-oauth2",
+  "dep:serde_json",
+  "tokio/fs",
+  "reqwest",
+  "reqwest/stream",
+  "reqwest/json",
+  "reqwest/multipart",
+  "tokio-util/io",
+]
 # enables the async runtime
 #   the async runtime is a single thread separate from the UI thread
 #   so all async tasks run on a single thread. this is fine since
 #   we only use async for uploads
 async = ["dep:tokio", "dep:futures-util", "dep:futures"]
+
+[lints.rust]
+unexpected_cfgs = { level = "deny", check-cfg = ['cfg(print_fps)'] }

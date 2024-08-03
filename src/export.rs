@@ -1,34 +1,28 @@
-use std::{error, fs, io};
 use std::backtrace::Backtrace;
 use std::fmt::{Debug, Formatter};
-use std::io::{ErrorKind, Read};
-use std::ops::{ControlFlow, Deref, DerefMut};
+use std::io::ErrorKind;
 use std::ops::ControlFlow::{Break, Continue};
+use std::ops::{ControlFlow, Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Sender, SyncSender, TrySendError};
 use std::sync::Mutex;
+use std::{fs, io};
 
 use egui::{Context, Id, NumExt};
-use ffmpeg::{codec, decoder, encoder, format, Frame, Packet, picture, Rational};
 use ffmpeg::codec::context::Context as CodecContext;
 use ffmpeg::encoder::Encoder;
-use ffmpeg::ffi::AV_TIME_BASE;
 use ffmpeg::format::context::{Input, Output};
 use ffmpeg::format::output;
 use ffmpeg::frame::{Audio as AudioFrame, Video as VideoFrame};
-use ffmpeg::sys::AV_TIME_BASE_Q;
+use ffmpeg::{codec, decoder, encoder, format, picture, Frame, Packet};
 use log::info;
 use thiserror::Error;
 use tokio::task::spawn_blocking;
 
-use crate::{AuthArc, MessageManager};
-use crate::task::{TaskCommand, TaskStage, TaskStatus};
-use crate::export::ExportError::NoVideoStream;
 use crate::player::r#impl::sec2ts;
-#[cfg(feature = "async")]
-use crate::spawn_async;
-use crate::util::{lock_ignore_poison, precise_seek, RationalExt, rescale, result2flow};
-use crate::util::CheapClone;
+use crate::task::{TaskCommand, TaskStage, TaskStatus};
+use crate::util::{lock_ignore_poison, precise_seek, result2flow, RationalExt};
+use crate::{AuthArc, MessageManager};
 
 #[derive(Default)]
 pub enum ExportFollowUp {
@@ -67,26 +61,25 @@ impl ExportFollowUp {
         task_cmds: Sender<TaskCommand>,
         task_id: u32,
         after_follow_up: impl Send + 'static + FnOnce(&Context) -> Result<(), ExportError>,
-        #[cfg(feature = "async")]
-        cancel_recv: Option<tokio::sync::oneshot::Receiver<()>>,
+        #[cfg(feature = "async")] cancel_recv: Option<tokio::sync::oneshot::Receiver<()>>,
     ) -> Result<(), ExportError> {
         match self {
             ExportFollowUp::Nothing => after_follow_up(ctx),
             #[cfg(feature = "youtube")]
             ExportFollowUp::Youtube { info_recv } => {
                 use crate::youtube;
-                status.send(TaskStatus {
-                    stage: TaskStage::YtAwaitingInfo,
-                    progress: f32::NEG_INFINITY,
-                }).unwrap();
+                status
+                    .send(TaskStatus {
+                        stage: TaskStage::YtAwaitingInfo,
+                        progress: f32::NEG_INFINITY,
+                    })
+                    .unwrap();
                 let should_delete = ctx
                     .data_mut(|d| d.get_persisted(Id::new("deleteAfterUpload")))
                     .unwrap_or(true);
-                let ctx = Context::clone(&ctx);
-                let msg2 = msg.cheap_clone();
-                let task = msg.handle_err_spawn("uploading to YouTube", async move {
-                    let msg = msg2;
-                    let mut file = tokio::fs::File::open(&output_file).await.map_err(|err| ExportError::OpenOutputFile { path: output_file.clone() /* technically we can do without cloning but it wouldnt be pretty */, err })?;
+                let ctx = Context::clone(ctx);
+                msg.handle_err_spawn("uploading to YouTube", async move {
+                    let file = tokio::fs::File::open(&output_file).await.map_err(|err| ExportError::OpenOutputFile { path: output_file.clone() /* technically we can do without cloning but it wouldnt be pretty */, err })?;
                     let auth = auth.read();
                     let yt = match &auth.youtube {
                         None => {
@@ -116,6 +109,7 @@ impl ExportFollowUp {
                     );
                     tokio::select! {
                         v = upload_video => {
+                            v?;
                             status.send(TaskStatus {
                                 stage: TaskStage::YtUpload,
                                 progress: 1.,
@@ -141,20 +135,6 @@ impl ExportFollowUp {
     }
 }
 
-// gts = global timestamp (AV_TIME_BASE timestamp)
-fn sec2gts(sec: f32) -> i64 {
-    (sec * AV_TIME_BASE as f32) as i64
-}
-
-fn gts2sec(gts: i64) -> f32 {
-    gts as f32 / AV_TIME_BASE as f32
-}
-
-// lts = local timestamp (local to some stream)
-fn gts2lts(gts: i64, local_base: Rational) -> i64 {
-    rescale(gts, AV_TIME_BASE_Q.into(), local_base)
-}
-
 #[derive(Error, Debug)]
 pub enum ExportError {
     #[error("The provided video file has no video stream")]
@@ -162,30 +142,26 @@ pub enum ExportError {
     #[error("Received an error from FFmpeg: {0}")]
     FFmpeg(#[from] ffmpeg_next::Error, Backtrace),
     #[error("No encoder found for codec: {}", .id.name())]
-    NoEncoder {
-        id: codec::Id,
-    },
+    NoEncoder { id: codec::Id },
     #[error("Could not create output directory(ies): {0}")]
     CreateOutDir(io::Error),
     #[error("Could not move {} to the recycling bin: {err}", .path.display())]
-    TrashErr {
-        path: PathBuf,
-        err: trash::Error,
-    },
+    TrashErr { path: PathBuf, err: trash::Error },
     #[error("Could not permanently delete {}: {err}", .path.display())]
-    DeleteErr {
-        path: PathBuf,
-        err: io::Error,
-    },
+    DeleteErr { path: PathBuf, err: io::Error },
     #[cfg(feature = "youtube")]
     #[error("Could not open output file {}: {err}", .path.display())]
-    OpenOutputFile {
-        path: PathBuf,
-        err: io::Error,
-    },
+    OpenOutputFile { path: PathBuf, err: io::Error },
+    #[cfg(feature = "youtube")]
+    #[error("Could not upload to YouTube:\n{0}")]
+    YouTubeUpload(
+        #[from]
+        #[backtrace]
+        crate::youtube::YtUploadError,
+    ),
 }
 
-pub fn audio_transcoder(
+fn audio_transcoder(
     input: &mut Input,
     output: &mut Output,
     in_stream_idx: usize,
@@ -195,17 +171,17 @@ pub fn audio_transcoder(
         .format()
         .flags()
         .contains(format::Flags::GLOBAL_HEADER);
-    let in_stream = input.stream(in_stream_idx).expect("in_stream_idx should have been valid");
+    let in_stream = input
+        .stream(in_stream_idx)
+        .expect("in_stream_idx should have been valid");
     let time_base = in_stream.time_base();
     let ts_rate = time_base.invert().value_f64();
 
-    let mut decoder = CodecContext::from_parameters(in_stream.parameters())?
+    let decoder = CodecContext::from_parameters(in_stream.parameters())?
         .decoder()
         .audio()?;
     let codec_id = decoder.codec().expect("decoder should have a codec").id();
-    let codec = encoder::find(codec_id).ok_or(ExportError::NoEncoder {
-        id: codec_id
-    })?;
+    let codec = encoder::find(codec_id).ok_or(ExportError::NoEncoder { id: codec_id })?;
     let mut out_stream = output.add_stream(codec)?;
     out_stream.set_parameters(in_stream.parameters());
     out_stream.set_time_base(time_base);
@@ -214,10 +190,8 @@ pub fn audio_transcoder(
     let start_ts = sec2ts(ts_rate, start as f64);
     let end_ts = sec2ts(ts_rate, end as f64);
 
-    unsafe { (&mut *out_stream.as_mut_ptr()).duration = end_ts - start_ts }
-    let mut encoder = CodecContext::new_with_codec(codec)
-        .encoder()
-        .audio()?;
+    unsafe { (*out_stream.as_mut_ptr()).duration = end_ts - start_ts }
+    let mut encoder = CodecContext::new_with_codec(codec).encoder().audio()?;
     encoder.set_parameters(out_stream.parameters())?;
     encoder.set_time_base(time_base);
     encoder.set_rate(decoder.rate() as i32);
@@ -233,7 +207,7 @@ pub fn audio_transcoder(
         start: start_ts,
         end: end_ts,
         decoder: decoder.0,
-        encoder: encoder.0.0,
+        encoder: encoder.0 .0,
         in_stream_idx,
         out_stream_idx: out_stream.index(),
         frame: AudioFrame::empty(),
@@ -241,7 +215,7 @@ pub fn audio_transcoder(
     })
 }
 
-pub fn video_transcoder(
+fn video_transcoder(
     input: &mut Input,
     output: &mut Output,
     in_stream_idx: usize,
@@ -251,7 +225,9 @@ pub fn video_transcoder(
         .format()
         .flags()
         .contains(format::Flags::GLOBAL_HEADER);
-    let in_stream = input.stream(in_stream_idx).expect("in_stream_idx should have been valid");
+    let in_stream = input
+        .stream(in_stream_idx)
+        .expect("in_stream_idx should have been valid");
     let time_base = in_stream.time_base();
     let ts_rate = time_base.invert().value_f64();
 
@@ -260,9 +236,7 @@ pub fn video_transcoder(
         .video()?;
 
     let codec_id = decoder.codec().expect("decoder should have a codec").id();
-    let codec = encoder::find(codec_id).ok_or(ExportError::NoEncoder {
-        id: codec_id
-    })?;
+    let codec = encoder::find(codec_id).ok_or(ExportError::NoEncoder { id: codec_id })?;
     let mut out_stream = output.add_stream(codec)?;
     out_stream.set_parameters(in_stream.parameters());
     out_stream.set_time_base(time_base);
@@ -271,16 +245,14 @@ pub fn video_transcoder(
     let start_ts = sec2ts(ts_rate, start as f64);
     let end_ts = sec2ts(ts_rate, end as f64);
 
-    unsafe { (&mut *out_stream.as_mut_ptr()).duration = end_ts - start_ts }
-    let mut encoder = CodecContext::new_with_codec(codec)
-        .encoder()
-        .video()?;
+    unsafe { (*out_stream.as_mut_ptr()).duration = end_ts - start_ts }
+    let mut encoder = CodecContext::new_with_codec(codec).encoder().video()?;
     encoder.set_parameters(out_stream.parameters())?;
     encoder.set_time_base(time_base);
     if global_header {
         encoder.set_flags(codec::Flags::GLOBAL_HEADER);
     }
-    let mut encoder = encoder.open_as(codec)?;
+    let encoder = encoder.open_as(codec)?;
     out_stream.set_parameters(&encoder);
 
     let mut frame = VideoFrame::empty();
@@ -291,7 +263,7 @@ pub fn video_transcoder(
         start: start_ts,
         end: end_ts,
         decoder: decoder.0,
-        encoder: encoder.0.0,
+        encoder: encoder.0 .0,
         in_stream_idx,
         out_stream_idx: out_stream.index(),
         frame,
@@ -303,7 +275,7 @@ pub fn video_transcoder(
     })
 }
 
-struct Transcoder<Fr: Deref<Target=Frame> + DerefMut, Fn: FnMut(&mut Fr)> {
+struct Transcoder<Fr: Deref<Target = Frame> + DerefMut, Fn: FnMut(&mut Fr)> {
     start: i64,
     end: i64,
     decoder: decoder::opened::Opened,
@@ -314,8 +286,12 @@ struct Transcoder<Fr: Deref<Target=Frame> + DerefMut, Fn: FnMut(&mut Fr)> {
     apply_frame_extra: Fn,
 }
 
-impl<Fr: Deref<Target=Frame> + DerefMut, Fn: FnMut(&mut Fr)> Transcoder<Fr, Fn> {
-    fn send_packets(&mut self, packet: &mut Packet, output: &mut Output) -> Result<(), ffmpeg_next::Error> {
+impl<Fr: Deref<Target = Frame> + DerefMut, Fn: FnMut(&mut Fr)> Transcoder<Fr, Fn> {
+    fn send_packets(
+        &mut self,
+        packet: &mut Packet,
+        output: &mut Output,
+    ) -> Result<(), ffmpeg_next::Error> {
         while self.encoder.receive_packet(packet).is_ok() {
             packet.set_stream(self.out_stream_idx);
             packet.write_interleaved(output)?;
@@ -323,7 +299,11 @@ impl<Fr: Deref<Target=Frame> + DerefMut, Fn: FnMut(&mut Fr)> Transcoder<Fr, Fn> 
         Ok(())
     }
 
-    fn process_frames(&mut self, packet: &mut Packet, output: &mut Output) -> ControlFlow<Option<ffmpeg_next::Error>> {
+    fn process_frames(
+        &mut self,
+        packet: &mut Packet,
+        output: &mut Output,
+    ) -> ControlFlow<Option<ffmpeg_next::Error>> {
         while self.decoder.receive_frame(&mut self.frame).is_ok() {
             let old_pts = self.frame.pts().unwrap_or_else(|| todo!());
             if old_pts >= self.end {
@@ -339,16 +319,24 @@ impl<Fr: Deref<Target=Frame> + DerefMut, Fn: FnMut(&mut Fr)> Transcoder<Fr, Fn> 
         Continue(())
     }
 
-    pub fn eof(&mut self, packet: &mut Packet, output: &mut Output) -> Result<(), ffmpeg_next::Error> {
+    pub fn eof(
+        &mut self,
+        packet: &mut Packet,
+        output: &mut Output,
+    ) -> Result<(), ffmpeg_next::Error> {
         self.decoder.send_eof()?;
         if let Break(Some(err)) = self.process_frames(packet, output) {
-            return Err(err)
+            return Err(err);
         }
         self.encoder.send_eof()?;
         self.send_packets(packet, output)
     }
 
-    pub fn receive_packet(&mut self, output: &mut Output, packet: &mut Packet) -> ControlFlow<Option<ffmpeg_next::Error>> {
+    pub fn receive_packet(
+        &mut self,
+        output: &mut Output,
+        packet: &mut Packet,
+    ) -> ControlFlow<Option<ffmpeg_next::Error>> {
         debug_assert_eq!(packet.stream(), self.in_stream_idx);
         result2flow(self.decoder.send_packet(packet).map_err(Some))?;
         self.process_frames(packet, output)
@@ -377,9 +365,13 @@ pub fn export(
         .data_mut(|d| d.get_persisted(Id::new("useTrash")))
         .unwrap_or(true);
 
-    let file_name = input_path.file_name().expect("user should not be able to provide input path with no file name");
-    let mut out_path =
-        PathBuf::from(ctx.data_mut(|d| d.get_persisted::<String>(Id::new("outPath")).expect("outPath should be already set once we get to exporting")));
+    let file_name = input_path
+        .file_name()
+        .expect("user should not be able to provide input path with no file name");
+    let mut out_path = PathBuf::from(ctx.data_mut(|d| {
+        d.get_persisted::<String>(Id::new("outPath"))
+            .expect("outPath should be already set once we get to exporting")
+    }));
     fs::create_dir_all(&out_path).map_err(ExportError::CreateOutDir)?;
     out_path.push(file_name);
 
@@ -392,13 +384,15 @@ pub fn export(
     let video_dur = video.end - video.start;
 
     let mut video = Some(video);
-    let mut audio =
-        match audio_stream_idx {
-            None => None,
-            Some(audio_stream_idx) => {
-                Some(audio_transcoder(input, &mut output, audio_stream_idx, trim)?)
-            }
-        };
+    let mut audio = match audio_stream_idx {
+        None => None,
+        Some(audio_stream_idx) => Some(audio_transcoder(
+            input,
+            &mut output,
+            audio_stream_idx,
+            trim,
+        )?),
+    };
 
     output.write_header()?;
 
@@ -410,7 +404,9 @@ pub fn export(
 
     let lock = lock_ignore_poison(&TASK_LOCK);
 
-    while (video.is_some() || (audio.is_some() && audio_stream_idx.is_some())) && packet.read(input).is_ok() {
+    while (video.is_some() || (audio.is_some() && audio_stream_idx.is_some()))
+        && packet.read(input).is_ok()
+    {
         let packet_pts = packet.pts();
 
         let stream = packet.stream();
@@ -419,7 +415,8 @@ pub fn export(
                 match status.try_send(TaskStatus {
                     stage: task_stage,
                     progress: ((packet_pts.unwrap_or(video_start) - video_start) as f32
-                        / video_dur as f32).at_most(0.99),
+                        / video_dur as f32)
+                        .at_most(0.99),
                 }) {
                     Ok(()) => {}
                     Err(TrySendError::Full(_)) => {
@@ -432,11 +429,9 @@ pub fn export(
                     }
                 }
 
-                if let Break(r) = transcoder
-                    .receive_packet(&mut output, &mut packet)
-                {
+                if let Break(r) = transcoder.receive_packet(&mut output, &mut packet) {
                     if let Some(err) = r {
-                        return Err(err.into())
+                        return Err(err.into());
                     }
 
                     transcoder.eof(&mut packet, &mut output)?;
@@ -445,11 +440,9 @@ pub fn export(
             }
         } else if Some(stream) == audio_stream_idx {
             if let Some(transcoder) = &mut audio {
-                if let Break(r) = transcoder
-                    .receive_packet(&mut output, &mut packet)
-                {
+                if let Break(r) = transcoder.receive_packet(&mut output, &mut packet) {
                     if let Some(err) = r {
-                        return Err(err.into())
+                        return Err(err.into());
                     }
 
                     transcoder.eof(&mut packet, &mut output)?;
@@ -468,10 +461,12 @@ pub fn export(
     output.write_trailer()?;
     drop(lock);
 
-    status.send(TaskStatus {
-        stage: task_stage,
-        progress: 1.,
-    }).unwrap();
+    status
+        .send(TaskStatus {
+            stage: task_stage,
+            progress: 1.,
+        })
+        .unwrap();
 
     follow_up.run(
         &ctx,
@@ -501,19 +496,23 @@ fn maybe_trash(use_trash: bool, path: impl AsRef<Path>) -> Result<(), ExportErro
         match trash::delete(&path) {
             Ok(_) => {}
             Err(trash::Error::CouldNotAccess { .. }) => {}
-            Err(err) => return Err(ExportError::TrashErr {
-                err,
-                path: path.as_ref().to_path_buf(),
-            }),
+            Err(err) => {
+                return Err(ExportError::TrashErr {
+                    err,
+                    path: path.as_ref().to_path_buf(),
+                })
+            }
         }
     } else {
         match fs::remove_file(&path) {
             Ok(_) => {}
             Err(e) if e.kind() == ErrorKind::NotFound => {}
-            Err(err) => return Err(ExportError::DeleteErr {
-                err,
-                path: path.as_ref().to_path_buf(),
-            }),
+            Err(err) => {
+                return Err(ExportError::DeleteErr {
+                    err,
+                    path: path.as_ref().to_path_buf(),
+                })
+            }
         }
     }
     Ok(())

@@ -3,45 +3,47 @@ use std::cmp::min;
 use std::convert::identity;
 use std::ffi::c_int;
 use std::mem::size_of;
-use std::ops::{ControlFlow, RangeInclusive};
 use std::ops::ControlFlow::{Break, Continue};
+use std::ops::{ControlFlow, RangeInclusive};
 use std::path::PathBuf;
-use std::sync::{Arc, mpsc, Mutex};
-use std::sync::mpsc::{Receiver, Sender, SyncSender};
+use std::sync::mpsc::{Receiver, Sender, SyncSender, TrySendError};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use eframe::egui::Context;
-use ffmpeg::{media, Packet, Stream, StreamMut};
 use ffmpeg::codec::context::Context as CodecContext;
-use ffmpeg::ffi::{av_seek_frame, AVDiscard, AVSEEK_FLAG_BACKWARD};
 use ffmpeg::ffi::AVDiscard::AVDISCARD_NONE;
-use ffmpeg::format::{Pixel, Sample};
+use ffmpeg::ffi::{av_seek_frame, AVDiscard, AVSEEK_FLAG_BACKWARD};
 use ffmpeg::format::context::Input;
 use ffmpeg::format::sample::Type;
+use ffmpeg::format::{Pixel, Sample};
 use ffmpeg::frame::{Audio, Video as VideoFrame};
 use ffmpeg::frame::{Audio as AudioFrame, Video};
 use ffmpeg::media::Type as MediaType;
-use ffmpeg::packet::Mut;
-use ffmpeg::sys::AV_TIME_BASE;
 use ffmpeg::sys::AVDiscard::AVDISCARD_ALL;
+use ffmpeg::sys::AV_TIME_BASE;
+use ffmpeg::{media, Packet, Stream, StreamMut};
 use ffmpeg_next::codec::decoder::audio::Audio as AudioDecoder;
 use ffmpeg_next::codec::decoder::video::Video as VideoDecoder;
 use ffmpeg_next::software::resampling::context::Context as Resampler;
 use ffmpeg_next::software::scaling::Context as Scaler;
-use log::{debug, trace};
+use log::{debug, warn};
 use rodio::{OutputStream, Sink, Source};
 use thiserror::Error;
 
 use VideoTime::PausedAt;
 
-use crate::{AuthArc, MessageManager, PlayerTexture, TextureArc};
-use crate::task::{ TaskCommand, TaskStatus};
 use crate::export::{export, ExportFollowUp};
 use crate::player::r#impl::PlayerCommand::UpdatePreview;
 use crate::player::r#impl::VideoTime::Anchored;
-use crate::util::{CloseReceiver, OwnedThreads, precise_seek, RationalExt, result2flow, spawn_owned_thread, time_diff, Updatable};
+use crate::task::{TaskCommand, TaskStatus};
 use crate::util::CheapClone;
+use crate::util::{
+    precise_seek, result2flow, spawn_owned_thread, time_diff, CloseReceiver, OwnedThreads,
+    RationalExt, Updatable,
+};
+use crate::{AuthArc, MessageManager, PlayerTexture, TextureArc};
 
 // #[derive(Debug)]
 enum PlayerCommand {
@@ -123,7 +125,7 @@ pub enum PlayerError {
     RodioStream(#[from] rodio::StreamError),
     #[error("Could not begin playing audio: {0}")]
     // no backtrace since there's only one place this can originate
-    RodioPlay(#[from] rodio::PlayError)
+    RodioPlay(#[from] rodio::PlayError),
 }
 
 struct PlayerStartupInfo {
@@ -183,10 +185,9 @@ impl Player {
         auth: AuthArc,
         follow_up: ExportFollowUp,
         task_cmds: Sender<TaskCommand>,
-        #[cfg(feature = "async")]
-        cancel_recv: Option<tokio::sync::oneshot::Receiver<()>>,
+        #[cfg(feature = "async")] cancel_recv: Option<tokio::sync::oneshot::Receiver<()>>,
     ) {
-        self.commands.send(PlayerCommand::Export {
+        let _ = self.commands.send(PlayerCommand::Export {
             trim,
             audio_track,
             status,
@@ -205,7 +206,7 @@ impl Player {
     }
 
     pub fn update_preview(&self, to: Duration) {
-        self.commands.try_send(PlayerCommand::UpdatePreview(to));
+        let _ = self.commands.try_send(PlayerCommand::UpdatePreview(to));
     }
 
     pub fn enable_preview_mode(&mut self) {
@@ -213,8 +214,7 @@ impl Player {
             self.preview_mode = true;
             let new_time = self.time.get().now();
             self.time.replace_current(PausedAt(new_time));
-            let _ = self.commands
-                .send(PlayerCommand::EnablePreviewMode);
+            let _ = self.commands.send(PlayerCommand::EnablePreviewMode);
         }
     }
 
@@ -242,7 +242,7 @@ impl Player {
 
     pub fn toggle_pause(&mut self) {
         // self.is_paused.toggle();
-        self.commands.send(PlayerCommand::PauseUnpause);
+        let _ = self.commands.send(PlayerCommand::PauseUnpause);
     }
 
     pub fn user_toggle_pause(&mut self, trim: &RangeInclusive<f32>) {
@@ -259,11 +259,11 @@ impl Player {
     }
 
     pub fn forward(&mut self) {
-        self.commands.try_send(PlayerCommand::Skip15s);
+        let _ = self.commands.try_send(PlayerCommand::Skip15s);
     }
 
     pub fn backward(&mut self) {
-        self.commands.try_send(PlayerCommand::Back15s);
+        let _ = self.commands.try_send(PlayerCommand::Back15s);
     }
 
     pub fn resolution(&self) -> [usize; 2] {
@@ -278,7 +278,13 @@ impl Player {
         *self.time.get()
     }
 
-    pub fn new(gui_ctx: Context, msg: MessageManager, input: Input, input_path: PathBuf, starting_volume: f32, texture: TextureArc) -> Option<Self> {
+    pub fn new(
+        gui_ctx: Context,
+        msg: MessageManager,
+        input: Input,
+        starting_volume: f32,
+        texture: TextureArc,
+    ) -> Option<Self> {
         let (info_send, info_recv) = mpsc::channel();
         let (commands_send, commands_recv) = mpsc::sync_channel(20);
         let (time_updater, time) = Updatable::new(PausedAt(Duration::ZERO));
@@ -291,19 +297,18 @@ impl Player {
                     gui_ctx,
                     msg.cheap_clone(),
                     input,
-                    input_path,
                     info_send,
                     commands_recv,
                     time_updater,
                     closer,
                     audio_track_changes,
                     volume,
-                    texture
+                    texture,
                 )
             });
         })
-            .unwrap()
-            .1;
+        .unwrap()
+        .1;
         let PlayerStartupInfo {
             resolution,
             frame_time,
@@ -330,32 +335,34 @@ impl Player {
         gui_ctx: Context,
         msg: MessageManager,
         mut input: Input,
-        input_path: PathBuf,
         info_send: mpsc::Sender<PlayerStartupInfo>,
         commands_recv: Receiver<PlayerCommand>,
         time_updater: Sender<VideoTime>,
         closer: CloseReceiver,
         audio_track_changes: Receiver<Option<usize>>,
         volume: Updatable<f32>,
-        texture: TextureArc
+        texture: TextureArc,
     ) -> Result<(), PlayerError> {
         let audio_stream_idx = input.streams().find(is_audio).map(|stream| stream.index());
-        let mut audio_tracks = if audio_stream_idx.is_some() {
-            1
-        } else {
-            0
-        };
+        let mut audio_tracks = if audio_stream_idx.is_some() { 1 } else { 0 };
 
         for mut stream in input
             .streams_mut()
-            .filter(|stream| is_audio(&stream) && Some(stream.index()) != audio_stream_idx)
+            .filter(|stream| is_audio(stream) && Some(stream.index()) != audio_stream_idx)
         {
             audio_tracks += 1;
             set_stream_discard(&mut stream, AVDISCARD_ALL)
         }
 
-        let video_stream = input.streams().best(MediaType::Video).ok_or(PlayerError::NoVideoStream)?;
-        let audio_stream = audio_stream_idx.map(|idx| input.stream(idx).expect("audio_stream_idx should point to the correct idx"));
+        let video_stream = input
+            .streams()
+            .best(MediaType::Video)
+            .ok_or(PlayerError::NoVideoStream)?;
+        let audio_stream = audio_stream_idx.map(|idx| {
+            input
+                .stream(idx)
+                .expect("audio_stream_idx should point to the correct idx")
+        });
 
         let video_stream_idx = video_stream.index();
 
@@ -375,18 +382,15 @@ impl Player {
 
         let audio_decoder = match &audio_stream {
             None => None,
-            Some(audio_stream) => {
-                Some(new_audio_decoder(audio_stream)?)
-            }
+            Some(audio_stream) => Some(new_audio_decoder(audio_stream)?),
         };
 
         let resolution = [video_decoder.width(), video_decoder.height()];
 
-        let scaler = video_decoder
-            .converter(
-                // convert to rgb24 pixel format and keep the same resolution
-                Pixel::RGB24,
-            )?;
+        let scaler = video_decoder.converter(
+            // convert to rgb24 pixel format and keep the same resolution
+            Pixel::RGB24,
+        )?;
 
         let resampler = match &audio_decoder {
             None => None,
@@ -399,7 +403,7 @@ impl Player {
 
         let avg_frame_rate = video_stream.avg_frame_rate();
         let frame_time = Duration::from_secs_f64(avg_frame_rate.invert().value_f64());
-        let input_mutex = Arc::new(Mutex::new((input, LastTs { stream: 0, ts: 0 })));
+        let input_mutex = Arc::new(Mutex::new(input));
 
         // set up our audio output
         let (audio_output_stream, audio_output) = OutputStream::try_default()?;
@@ -421,7 +425,7 @@ impl Player {
             closer: closer.cheap_clone(),
             audio_track_changes,
             volume,
-            msg: msg.cheap_clone()
+            msg: msg.cheap_clone(),
         };
 
         let sink = Sink::try_new(&audio_output)?;
@@ -445,7 +449,6 @@ impl Player {
             time: Anchored(Instant::now()),
             // anchor: Instant::now(),
             texture,
-            input_path,
 
             audio_sink: sink,
             commands_recv,
@@ -485,20 +488,16 @@ fn next_packet(
     // partner_stream_idx: usize,
     recv: &mut Receiver<Packet>,
     send: &mut mpsc::SyncSender<Packet>,
-    input_mutex: &Arc<Mutex<(Input, LastTs)>>,
+    input_mutex: &Arc<Mutex<Input>>,
 ) -> Option<Packet> {
-    let mut fine_ill_do_it_myself = |(input, last_ts): &mut (Input, LastTs)| {
+    let mut fine_ill_do_it_myself = |input: &mut Input| {
         for (packet_stream, packet) in input.packets() {
-            if let Some(ts) = packet.pts() {
-                *last_ts = LastTs {
-                    stream: packet_stream.index(),
-                    ts,
-                };
-            }
             if self_stream_check(&packet_stream) {
                 return Some(packet);
             } else if partner_stream_check(&packet_stream) {
-                send.try_send(packet);
+                if let Err(TrySendError::Full(_)) = send.try_send(packet) {
+                    warn!("could not send packet to other side (buffer full)")
+                }
                 continue;
             } else {
                 // println!("{}", packet_stream.index());
@@ -509,7 +508,7 @@ fn next_packet(
     };
 
     if let Ok(packet) = recv.try_recv() {
-        return Some(packet);
+        Some(packet)
     } else if let Ok(mut input) = input_mutex.try_lock() {
         fine_ill_do_it_myself(&mut input)
     } else {
@@ -534,18 +533,12 @@ pub fn ts2dur(ts_rate: f64, ts: i64) -> Duration {
     Duration::from_secs_f64(ts2sec(ts_rate, ts))
 }
 
-#[derive(Debug, Copy, Clone)]
-struct LastTs {
-    stream: usize,
-    ts: i64,
-}
-
 struct VideoManager {
     stream_idx: usize,
     // audio_stream_idx: usize,
     ts_rate: f64,
 
-    input_mutex: Arc<Mutex<(Input, LastTs)>>,
+    input_mutex: Arc<Mutex<Input>>,
     video_recv: Receiver<Packet>,
     audio_send: SyncSender<Packet>,
     audio_request_flush: Sender<()>,
@@ -561,7 +554,6 @@ struct VideoManager {
     msg: MessageManager,
     time: VideoTime,
     texture: TextureArc,
-    input_path: PathBuf,
 
     audio_sink: Sink,
     commands_recv: Receiver<PlayerCommand>,
@@ -613,7 +605,7 @@ impl VideoManager {
         let target_ts = sec2ts(self.ts_rate, target.as_secs_f64().floor());
 
         precise_seek(
-            &mut input.0,
+            &mut input,
             &mut self.decoder,
             &mut self.frame,
             self.stream_idx,
@@ -634,7 +626,7 @@ impl VideoManager {
         } else {
             Anchored(Instant::now() - new_frame_time)
         };
-        self.time_updater.send(self.time);
+        self.time_updater.send(self.time).unwrap();
         self.gui_ctx.request_repaint();
         debug!("jumped {:?}", time_diff(new_frame_time, anchor_old));
 
@@ -646,7 +638,7 @@ impl VideoManager {
         self.decoder.flush();
         unsafe {
             let result = av_seek_frame(
-                input.0.as_mut_ptr(),
+                input.as_mut_ptr(),
                 self.stream_idx as c_int,
                 sec2ts(self.ts_rate, time.as_secs_f64()),
                 AVSEEK_FLAG_BACKWARD,
@@ -658,10 +650,11 @@ impl VideoManager {
                 )
             }
         }
-        for (stream, packet) in input.0.packets() {
+        for (stream, packet) in input.packets() {
             if stream.index() == self.stream_idx {
                 // if the pts of the packet matches the pts of the last preview, just skip it to save time
-                self.decoder.send_packet(&packet);
+                // todo: only allow "not yet available" errors and throw others
+                let _ = self.decoder.send_packet(&packet);
                 if self.decoder.receive_frame(&mut self.frame).is_ok() {
                     break;
                 }
@@ -670,10 +663,9 @@ impl VideoManager {
         // we've done everything we need with the input. drop the lock now
         drop(input);
         self.decoder.flush();
-        self.scaler
-            .run(&self.frame, &mut self.frame_scaled)?;
+        self.scaler.run(&self.frame, &mut self.frame_scaled)?;
         let mut tex = self.texture.lock().unwrap();
-        update_texture(&self.frame_scaled, &mut *tex);
+        update_texture(&self.frame_scaled, &mut tex);
 
         Ok(())
     }
@@ -692,7 +684,7 @@ impl VideoManager {
                 }
                 PlayerCommand::UpdatePreview(target) => {
                     self.update_preview(target)?;
-                },
+                }
                 _ => {}
             }
         }
@@ -710,8 +702,7 @@ impl VideoManager {
         auth: AuthArc,
         follow_up: ExportFollowUp,
         task_cmds: Sender<TaskCommand>,
-        #[cfg(feature = "async")]
-        cancel_recv: Option<tokio::sync::oneshot::Receiver<()>>,
+        #[cfg(feature = "async")] cancel_recv: Option<tokio::sync::oneshot::Receiver<()>>,
     ) {
         self.audio_sink.clear();
         let ctx = self.gui_ctx.clone();
@@ -725,7 +716,6 @@ impl VideoManager {
                 let audio_stream_idx =
                     audio_track.map(|audio_track|
                     input
-                        .0
                         .streams()
                         .filter(is_audio)
                         .nth(audio_track)
@@ -736,7 +726,7 @@ impl VideoManager {
                     export(
                         ctx,
                         msg.cheap_clone(),
-                        &mut input.0,
+                        &mut input,
                         trim,
                         stream_idx,
                         audio_stream_idx,
@@ -755,7 +745,11 @@ impl VideoManager {
     }
 
     #[must_use]
-    fn process_command(&mut self, paused: bool, command: PlayerCommand) -> ControlFlow<Option<PlayerError>> {
+    fn process_command(
+        &mut self,
+        paused: bool,
+        command: PlayerCommand,
+    ) -> ControlFlow<Option<PlayerError>> {
         // println!("processing command: {command:?}");
         match command {
             PlayerCommand::PauseUnpause => {
@@ -782,14 +776,20 @@ impl VideoManager {
                 self.time_updater.send(self.time).unwrap();
                 self.audio_sink.play();
             }
-            PlayerCommand::Skip15s => {
-                result2flow(self.precise_seek(paused, self.time.now() + Duration::from_secs(15)).map_err(Some))?
+            PlayerCommand::Skip15s => result2flow(
+                self.precise_seek(paused, self.time.now() + Duration::from_secs(15))
+                    .map_err(Some),
+            )?,
+            PlayerCommand::Back15s => result2flow(
+                self.precise_seek(
+                    paused,
+                    self.time.now().saturating_sub(Duration::from_secs(15)),
+                )
+                .map_err(Some),
+            )?,
+            PlayerCommand::SeekTo(time) => {
+                result2flow(self.precise_seek(paused, time).map_err(Some))?
             }
-            PlayerCommand::Back15s => result2flow(self.precise_seek(
-                paused,
-                self.time.now().saturating_sub(Duration::from_secs(15)),
-            ).map_err(Some))?,
-            PlayerCommand::SeekTo(time) => result2flow(self.precise_seek(paused, time).map_err(Some))?,
             UpdatePreview(_) => {
                 // ignore the preview update request since we're not in preview mode
             }
@@ -806,7 +806,7 @@ impl VideoManager {
                 follow_up,
                 task_cmds,
                 #[cfg(feature = "async")]
-                cancel_recv
+                cancel_recv,
             } => {
                 self.export(
                     trim,
@@ -846,7 +846,7 @@ impl VideoManager {
                     Err(err)
                 } else {
                     Ok(())
-                }
+                };
             }
             self.attempt_refresh()?;
 
@@ -869,7 +869,7 @@ impl VideoManager {
             // update the texture (if the frame isn't empty)
             if self.frame_scaled.planes() != 0 {
                 let mut tex = self.texture.lock().unwrap();
-                update_texture(&self.frame_scaled, &mut *tex);
+                update_texture(&self.frame_scaled, &mut tex);
             }
             // decode the next frame for later
             loop {
@@ -890,12 +890,12 @@ impl VideoManager {
                         }
                         Some(v) => v,
                     };
-                    self.decoder.send_packet(&packet);
+                    // todo: only allow "not yet available" errors and throw others
+                    self.decoder.send_packet(&packet).unwrap();
                 }
             }
             // rescale our new frame
-            self.scaler
-                .run(&self.frame, &mut self.frame_scaled)?;
+            self.scaler.run(&self.frame, &mut self.frame_scaled)?;
         }
 
         Ok(())
@@ -930,7 +930,9 @@ fn update_texture(frame: &VideoFrame, texture: &mut PlayerTexture) {
         let line_size = frame.stride(0);
         let real_line_size = size[0] * 3;
 
-        for y in 0..size[1] /* height */ {
+        for y in 0..size[1]
+        /* height */
+        {
             let real_data = &data[(y * line_size)..][..real_line_size];
             texture.bytes.extend_from_slice(real_data);
         }
@@ -946,7 +948,7 @@ struct AudioManager {
     stream_idx: Option<usize>,
     video_stream_idx: usize,
 
-    input_mutex: Arc<Mutex<(Input, LastTs)>>,
+    input_mutex: Arc<Mutex<Input>>,
     audio_recv: Receiver<Packet>,
     video_send: SyncSender<Packet>,
     flush_requests: Receiver<()>,
@@ -961,7 +963,7 @@ struct AudioManager {
     resampler: Option<Resampler>,
 
     volume: Updatable<f32>,
-    msg: MessageManager
+    msg: MessageManager,
 }
 
 impl AudioManager {
@@ -989,7 +991,6 @@ impl AudioManager {
             if let Some(new_track) = self.audio_track_changes.try_iter().last() {
                 let mut input = self.input_mutex.lock().unwrap();
                 let new_track_idx = new_track.map(|new_track| input
-                    .0
                     .streams()
                     .filter(is_audio)
                     .nth(new_track)
@@ -1000,10 +1001,10 @@ impl AudioManager {
                     self.stream_idx = new_track_idx;
 
                     if let Some(old_track) = old_track {
-                        set_stream_discard(&mut input.0.stream_mut(old_track).expect("old_track should point to an existing stream but there aren't enough"), AVDISCARD_ALL);
+                        set_stream_discard(&mut input.stream_mut(old_track).expect("old_track should point to an existing stream but there aren't enough"), AVDISCARD_ALL);
                     }
                     if let Some(new_track_idx) = new_track_idx {
-                        let mut new_track = input.0.stream_mut(new_track_idx).unwrap();
+                        let mut new_track = input.stream_mut(new_track_idx).unwrap();
                         set_stream_discard(&mut new_track, AVDISCARD_NONE);
 
                         // create new decoder and resampler
@@ -1032,7 +1033,8 @@ impl AudioManager {
                 }
 
                 let decoder = self.decoder.as_mut().unwrap();
-                decoder.send_packet(&packet);
+                // todo: only allow "not yet available" errors and throw others
+                decoder.send_packet(&packet).unwrap();
                 if decoder.receive_frame(&mut self.frame).is_ok() {
                     break;
                 }
@@ -1046,7 +1048,7 @@ impl AudioManager {
                 .unwrap();
             self.sample_idx = 0;
         } else if self.stream_idx.is_none() {
-            return Ok(Some(0.))
+            return Ok(Some(0.));
         }
         // .plane::<f32>(0) is nice because it returns the floats instead of bytes, but
         //      we can't use it because the array it returns bases its size off of the
@@ -1081,9 +1083,8 @@ impl Iterator for AudioManager {
         }
 
         let msg = self.msg.cheap_clone();
-        msg.handle_err("playing/decoding audio", |_| {
-            self.next_sample()
-        }).and_then(identity)
+        msg.handle_err("playing/decoding audio", |_| self.next_sample())
+            .and_then(identity)
     }
 }
 
@@ -1093,11 +1094,17 @@ impl Source for AudioManager {
     }
 
     fn channels(&self) -> u16 {
-        self.decoder.as_ref().map(|decoder| decoder.channels()).unwrap_or(1)
+        self.decoder
+            .as_ref()
+            .map(|decoder| decoder.channels())
+            .unwrap_or(1)
     }
 
     fn sample_rate(&self) -> u32 {
-        self.decoder.as_ref().map(|decoder| decoder.rate()).unwrap_or(48000)
+        self.decoder
+            .as_ref()
+            .map(|decoder| decoder.rate())
+            .unwrap_or(48000)
     }
 
     fn total_duration(&self) -> Option<Duration> {

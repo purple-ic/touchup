@@ -6,7 +6,7 @@ use eframe::{
     glow::{self, TEXTURE_2D},
     Frame,
 };
-use egui::{Context, TextureId};
+use egui::TextureId;
 use log::{debug, info};
 
 pub type TextureArc = Arc<Mutex<PlayerTexture>>;
@@ -68,7 +68,6 @@ fn init_texture(texture: glow::Texture, gl: &glow::Context, size: [usize; 2], da
 pub fn attempt_tex_update(
     current_tex: &mut Option<CurrentTex>,
     texture: &Mutex<PlayerTexture>,
-    ctx: &Context,
     frame: &mut Frame,
 ) {
     let mut tex = match texture.try_lock() {

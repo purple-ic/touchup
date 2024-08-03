@@ -1,51 +1,36 @@
 #![cfg(feature = "youtube")]
 
 use std::backtrace::Backtrace;
-use std::borrow::Cow;
-use std::error::Error;
-use std::fmt::Write;
-use std::fs::File;
 use std::future::Future;
-use std::io::{Cursor, ErrorKind, Seek, SeekFrom};
+use std::io::{ErrorKind, SeekFrom};
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::{mpsc, Arc};
-use std::thread::Scope;
-use std::{fs, io, iter, mem};
+use std::sync::mpsc;
+use std::{fs, io, mem};
 
 use eframe::emath::{Align, Vec2};
 use eframe::epaint::text::TextWrapping;
 use egui::text::{LayoutJob, LayoutSection};
-use egui::util::IdTypeMap;
 use egui::{
     include_image, Button, Color32, Context, CursorIcon, FontId, Id, Image, ImageSource, Label,
-    Layout, OpenUrl, RichText, Sense, TextBuffer, TextEdit, TextFormat, TextStyle, TextWrapMode,
-    Ui, Widget,
+    Layout, OpenUrl, RichText, Sense, TextEdit, TextFormat, TextStyle, Ui, Widget,
 };
-use futures::Stream;
-use futures_util::StreamExt;
 use log::{debug, error};
-use reqwest::header::{HeaderMap, HeaderValue};
-use reqwest::{multipart, Body};
+use reqwest::header::HeaderValue;
+use reqwest::multipart;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use thiserror::Error;
 use tokio::io::AsyncSeekExt;
 use tokio::sync::oneshot;
 use tokio::task::spawn_blocking;
-use tokio_util::bytes::{BufMut, BytesMut};
-use tokio_util::codec::{BytesCodec, FramedRead};
-use tokio_util::io::ReaderStream;
 use yup_oauth2::authenticator::{Authenticator, DefaultHyperClient, HyperClientBuilder};
 use yup_oauth2::authenticator_delegate::InstalledFlowDelegate;
-use yup_oauth2::hyper_rustls::HttpsConnector;
 use yup_oauth2::{ConsoleApplicationSecret, InstalledFlowAuthenticator, InstalledFlowReturnMethod};
 
 use crate::task::Task;
 use crate::util::{AnyExt, CheapClone, Updatable};
-use crate::{
-    header_map, https_client, infallible_unreachable, spawn_async, storage, AuthArc, MessageManager,
-};
+use crate::{header_map, https_client, spawn_async, storage, AuthArc, MessageManager};
 
 pub enum YtInfo {
     Continue {
@@ -64,7 +49,6 @@ pub struct YtScreen {
     // if None, the value has already been sent
     pub send_final: Option<tokio::sync::oneshot::Sender<YtInfo>>,
     pub task_id: u32,
-    pub next_frame_request_focus: bool,
 }
 
 impl YtScreen {
@@ -284,13 +268,6 @@ impl YtVisibility {
     }
 }
 
-#[derive(Clone)]
-struct LoginUrl(Arc<str>);
-
-pub(super) fn is_trying_login(data: &IdTypeMap) -> bool {
-    data.get_temp::<LoginUrl>(Id::NULL).is_some()
-}
-
 pub struct YtCtx {
     pub auth: Authenticator<<DefaultHyperClient as HyperClientBuilder>::Connector>,
     pub upload_url: String,
@@ -369,7 +346,7 @@ pub async fn yt_auth(
     }
 
     let ctx2 = ctx.clone();
-    let mut auth = InstalledFlowAuthenticator::builder(
+    let auth = InstalledFlowAuthenticator::builder(
         secret.installed.unwrap(),
         InstalledFlowReturnMethod::HTTPRedirect,
     )
@@ -387,7 +364,6 @@ pub async fn yt_auth(
     // try to cache the token for the upload scope
     let _ = auth.token(&[UPLOAD_SCOPE]).await;
 
-    ctx.data_mut(|d| d.remove_by_type::<LoginUrl>());
     Ok(YtCtx {
         auth,
         upload_url: v_info.upload_url,
@@ -481,25 +457,24 @@ impl YtAuthScreen {
             return None;
         }
         ui.heading("Please log into YouTube");
-        let url = self.url.get();
+        let url: &String = self.url.get();
         let url_available = !url.is_empty();
         ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
             if url_available {
                 if ui.button("Try again").clicked() {
                     self.pressed_try_again = true;
-                    ui.output_mut(|o| o.open_url = Some(OpenUrl::new_tab(&url)))
+                    ui.output_mut(|o| o.open_url = Some(OpenUrl::new_tab(url)))
                 }
-                if self.pressed_try_again {
-                    if Label::new(
+                if self.pressed_try_again
+                    && Label::new(
                         RichText::new("Click to copy the login URL").color(Color32::WHITE),
                     )
                     .sense(Sense::hover())
                     .ui(ui)
                     .on_hover_cursor(CursorIcon::PointingHand)
                     .clicked()
-                    {
-                        ui.output_mut(|o| o.copied_text = url.to_string())
-                    }
+                {
+                    ui.output_mut(|o| o.copied_text = url.to_string())
                 }
             } else {
                 ui.spinner();
@@ -540,8 +515,6 @@ pub async fn yt_upload(
 
     // these docs are for google drive but the same multipart method applies to the youtube api
     // https://developers.google.com/drive/api/guides/manage-uploads#multipart
-
-    let body_len = dbg!(file_len) as usize /* the vec will 100% exceed the file_len capacity, but starting at file_len is already good as it'll prevent a LOT of reallocations anyway */;
 
     let token = ctx.auth.token(&[UPLOAD_SCOPE]).await?;
     let token = token

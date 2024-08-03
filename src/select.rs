@@ -3,13 +3,16 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui::Ui;
 use eframe::Frame;
-use egui::{Align, Color32, Context, CursorIcon, FontSelection, Id, Label, Layout, OpenUrl, RichText, Sense, TextEdit, TextStyle, TextWrapMode, Widget, WidgetText};
+use egui::{
+    Align, Color32, Context, CursorIcon, FontSelection, Id, Label, Layout, OpenUrl, RichText,
+    Sense, TextEdit, TextStyle, TextWrapMode, Widget, WidgetText,
+};
 use rfd::{MessageButtons, MessageDialog, MessageLevel};
 
 use SelectScreenOut::*;
 
-use crate::{AuthArc, storage};
 use crate::util::report_err;
+use crate::{storage, AuthArc};
 
 pub struct SelectScreen {
     // dir_reader: OwnedThreads,
@@ -35,13 +38,13 @@ impl SelectScreen {
                         .map(|p| p.join("touchup"))
                         .and_then(|p| p.to_str().map(str::to_string))
                 })
-                .unwrap_or_else(|| String::new()),
+                .unwrap_or_default(),
         }
     }
 
     #[must_use]
     pub fn draw(&mut self, ui: &mut Ui, frame: &mut Frame, auth: &AuthArc) -> SelectScreenOut {
-        let mut try_save_path = |ctx: &Context, frame: &mut Frame, out_path: &mut String| {
+        let try_save_path = |ctx: &Context, frame: &mut Frame, out_path: &mut String| {
             let path = Path::new(out_path);
             match path.try_exists() {
                 Ok(_) if !out_path.is_empty() => {
@@ -54,6 +57,7 @@ impl SelectScreen {
                         .set_level(MessageLevel::Error)
                         .set_description(format!("The given output path is invalid: {path:?}"))
                         .set_buttons(MessageButtons::Ok)
+                        .set_parent(frame)
                         .show();
                     false
                 }
@@ -63,18 +67,25 @@ impl SelectScreen {
 
         ui.style_mut().wrap_mode = Some(TextWrapMode::Wrap);
 
-        let do_fd = ui.scope(|ui| {
-            for (_, font) in ui.style_mut().text_styles.iter_mut() {
-                font.size *= 1.2;
-            }
-            ui
-                .with_layout(Layout::left_to_right(Align::Min), |ui| {
-                    let do_fd = ui.button(RichText::new("Open file...").color(Color32::WHITE)).clicked();
-                    ui.label(WidgetText::from("Or drag & drop").text_style(TextStyle::Button).color(Color32::WHITE));
+        let do_fd = ui
+            .scope(|ui| {
+                for (_, font) in ui.style_mut().text_styles.iter_mut() {
+                    font.size *= 1.2;
+                }
+                ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
+                    let do_fd = ui
+                        .button(RichText::new("Open file...").color(Color32::WHITE))
+                        .clicked();
+                    ui.label(
+                        WidgetText::from("Or drag & drop")
+                            .text_style(TextStyle::Button)
+                            .color(Color32::WHITE),
+                    );
                     do_fd
                 })
                 .inner
-        }).inner;
+            })
+            .inner;
 
         ui.add_space(32.);
 
@@ -96,7 +107,7 @@ impl SelectScreen {
         ui.with_layout(Layout::top_down(Align::Min), |ui| {
             // returns None if the value didn't change,
             //  or Some with the new value if it did change
-            let mut checkbox = |ui: &mut Ui, id: &str, text: &str, description: &str, default: bool| -> Option<bool> {
+            let checkbox = |ui: &mut Ui, id: &str, text: &str, description: &str, default: bool| -> Option<bool> {
                 let id = Id::new(id);
                 let mut checked = ui
                     .ctx()
@@ -171,10 +182,8 @@ impl SelectScreen {
                             let yt = auth_w.youtube.take().expect("youtube should not have been removed between switching lock from read -> to write");
                             youtube::yt_log_out(&yt);
                         }
-                    } else {
-                        if ui.button("Log in to YouTube").clicked() {
-                            yt_login = true;
-                        }
+                    } else if ui.button("Log in to YouTube").clicked() {
+                        yt_login = true;
                     }
                 });
                 checkbox(ui, "deleteAfterUpload", "Delete exported videos after uploading", "If enabled, the edited version of the video will be deleted as soon as it is uploaded. The original unedited version will remain intact unless \"Delete input videos after export\" is enabled.",
@@ -200,10 +209,9 @@ impl SelectScreen {
             match rfd::FileDialog::new()
                 .set_parent(frame)
                 .set_title("Pick a video to edit")
-                .pick_file() {
-                Some(v) if try_save_path(ui.ctx(), frame, &mut self.out_path) => {
-                    Edit(v)
-                }
+                .pick_file()
+            {
+                Some(v) if try_save_path(ui.ctx(), frame, &mut self.out_path) => Edit(v),
                 _ => Stay,
             }
         } else if let Some(v) = ui

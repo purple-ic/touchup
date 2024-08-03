@@ -139,10 +139,9 @@ impl PlayerUI {
             ctx.data_mut(|d| d.get_persisted(Id::new("enableSound")).unwrap_or(true));
         Some(Self {
             player: Player::new(
-                Context::clone(&ctx),
+                Context::clone(ctx),
                 msg,
                 input,
-                path.as_ref().into(),
                 if enable_sound { volume } else { 0. },
                 texture,
             )?,
@@ -377,7 +376,7 @@ impl PlayerUI {
                     show_tooltip(ui)
                 });
                 if !was_shown && volume.hovered() {
-                    volume.show_tooltip_ui(|ui| show_tooltip(ui))
+                    volume.show_tooltip_ui(show_tooltip)
                 }
 
                 Label::new(dur_galley).selectable(false).ui(ui)

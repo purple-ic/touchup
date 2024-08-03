@@ -2,44 +2,28 @@
 
 extern crate ffmpeg_next as ffmpeg;
 
-use std::backtrace::{Backtrace, BacktraceStatus};
-use std::borrow::Cow;
-use std::error::{request_ref, Error};
-use std::fmt::{Debug, Display, Formatter};
+use std::error::Error;
+use std::fmt::Debug;
 use std::future::Future;
-use std::io::Stdout;
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::mpsc::{SendError, TrySendError};
-use std::sync::{mpsc, Arc, Barrier, Mutex, MutexGuard, OnceLock, TryLockError, TryLockResult};
+use std::sync::{mpsc, Arc, Barrier, Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
 
-use eframe::egui::load::TextureLoader;
-use eframe::egui::{CentralPanel, Widget};
-use eframe::egui_glow::{check_for_gl_error, CallbackFn};
-use eframe::epaint::PaintCallbackInfo;
-use eframe::glow::{HasContext, PixelUnpackData, INVALID_ENUM, TEXTURE_2D};
-use eframe::{egui, egui_glow, glow, storage_dir, CreationContext, Frame, NativeOptions};
+use eframe::egui::CentralPanel;
+use eframe::{egui, storage_dir, CreationContext, Frame, NativeOptions};
 use egui::epaint::mutex::RwLock;
-use egui::epaint::TextureManager;
-use egui::panel::TopBottomSide;
-use egui::{
-    Align, Color32, Context, Id, ImageData, Label, Layout, ProgressBar, Rect, RichText, ScrollArea,
-    TextureId, TopBottomPanel, ViewportBuilder, Visuals, WidgetText,
-};
-use log::{debug, error, info, LevelFilter};
+use egui::{Color32, Context, ScrollArea, ViewportBuilder, Visuals};
+use log::info;
 use player::tex::{attempt_tex_update, CurrentTex, PlayerTexture, TextureArc};
 use replace_with::replace_with;
 use rfd::{MessageButtons, MessageLevel};
-use serde::{Deserialize, Serialize};
-use simple_logger::SimpleLogger;
 
 use crate::editor::{Editor, EditorExit};
 use crate::logging::init_logging;
 use crate::select::{SelectScreen, SelectScreenOut};
 use crate::task::{draw_tasks, Task, TaskCommand};
-use crate::util::{plural, report_err, CheapClone, Updatable};
+use crate::util::{report_err, CheapClone};
 
 mod editor;
 pub mod export;
@@ -81,7 +65,7 @@ fn storage() -> PathBuf {
     storage_dir(APP_ID).unwrap_or_else(|| todo!())
 }
 
-const APP_ID: &'static str = "touch_up";
+const APP_ID: &str = "touch_up";
 
 #[cfg(feature = "async")]
 static ASYNC_HANDLE: OnceLock<tokio::runtime::Handle> = OnceLock::new();
@@ -259,7 +243,7 @@ impl TouchUp {
 
 impl eframe::App for TouchUp {
     fn update(&mut self, ctx: &Context, frame: &mut Frame) {
-        attempt_tex_update(&mut self.current_tex, &self.texture, ctx, frame);
+        attempt_tex_update(&mut self.current_tex, &self.texture, frame);
         draw_tasks(ctx, &mut self.tasks.1, &mut self.task_commands);
 
         CentralPanel::default().show(ctx, |ui| {
@@ -302,7 +286,7 @@ impl eframe::App for TouchUp {
                             ) {
                                 None => {}
                                 Some(EditorExit::ToSelectScreen) => {
-                                    self.screen = Screen::Select(Self::select_screen(&ctx))
+                                    self.screen = Screen::Select(Self::select_screen(ctx))
                                 }
                                 #[cfg(feature = "youtube")]
                                 Some(EditorExit::ToYoutubeScreen { init }) => {
@@ -313,13 +297,13 @@ impl eframe::App for TouchUp {
                         #[cfg(feature = "youtube")]
                         Screen::YouTube(yt) => {
                             if yt.draw(ui, &mut self.tasks.1) {
-                                self.screen = Screen::Select(Self::select_screen(&ctx))
+                                self.screen = Screen::Select(Self::select_screen(ctx))
                             }
                         }
                         #[cfg(feature = "youtube")]
                         Screen::YouTubeLogin(_) => replace_with(
                             &mut self.screen,
-                            || Screen::Select(Self::select_screen(&ctx)),
+                            || Screen::Select(Self::select_screen(ctx)),
                             |s| {
                                 let login = match s {
                                     Screen::YouTubeLogin(v) => v,
@@ -328,7 +312,7 @@ impl eframe::App for TouchUp {
                                 login
                                     .draw(ui, &self.auth)
                                     .map(Screen::YouTubeLogin)
-                                    .unwrap_or_else(|| Screen::Select(Self::select_screen(&ctx)))
+                                    .unwrap_or_else(|| Screen::Select(Self::select_screen(ctx)))
                             },
                         ),
                     };
@@ -363,6 +347,7 @@ pub struct MessageManager {
 
 #[derive(Clone, Debug)]
 pub struct MessageBufFull {
+    #[allow(dead_code)]
     attempted_message: String,
 }
 

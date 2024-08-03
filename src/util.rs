@@ -1,22 +1,24 @@
-use std::{fmt, iter, mem, thread};
+#![allow(dead_code)]
+
 use std::backtrace::{Backtrace, BacktraceStatus};
 use std::cmp::Ordering;
-use std::error::{Error, request_ref};
+use std::error::{request_ref, Error};
 use std::ffi::c_int;
 use std::fmt::{Display, Formatter};
 use std::ops::ControlFlow;
-use std::sync::{Arc, mpsc, Mutex, MutexGuard, Once};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError};
+use std::sync::{mpsc, Arc, Mutex, MutexGuard, Once};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use std::{fmt, iter, mem, thread};
 
 use egui::{Context, FontFamily, FontId};
-use ffmpeg::ffi::{AV_PKT_FLAG_DISCARD, av_seek_frame, AVSEEK_FLAG_BACKWARD};
+use ffmpeg::ffi::{av_seek_frame, AVSEEK_FLAG_BACKWARD, AV_PKT_FLAG_DISCARD};
 use ffmpeg::format::context::Input;
 use ffmpeg::frame::Video;
 use ffmpeg::packet::Mut;
-use ffmpeg::Rational;
 use ffmpeg::sys::av_rescale_q;
+use ffmpeg::Rational;
 use ffmpeg_next::codec::decoder::video::Video as VideoDecoder;
 use log::error;
 
@@ -68,7 +70,7 @@ impl<T> Updatable<T> {
                 self.is_closed()
             }
             Err(TryRecvError::Disconnected) => true,
-            Err(TryRecvError::Empty) => false
+            Err(TryRecvError::Empty) => false,
         }
     }
 
@@ -105,7 +107,7 @@ pub struct FrameCounter {
 impl FrameCounter {
     pub fn new() -> FrameCounter {
         Self {
-            frames: Vec::with_capacity(60)
+            frames: Vec::with_capacity(60),
         }
     }
 
@@ -122,7 +124,11 @@ impl FrameCounter {
         let now = Instant::now();
 
         self.frames.push(now);
-        let to_rem = self.frames.iter().take_while(|&&frame_time| (now - frame_time) > Duration::from_secs(1)).count();
+        let to_rem = self
+            .frames
+            .iter()
+            .take_while(|&&frame_time| (now - frame_time) > Duration::from_secs(1))
+            .count();
 
         self.frames.splice(..to_rem, iter::empty());
         self.frames.len()
@@ -138,9 +144,7 @@ pub fn measure_time<R>(func: impl FnOnce() -> R) -> (R, Duration) {
 #[macro_export]
 macro_rules! print_time {
     ($v:expr) => {{
-        let (val, time) = $crate::util::measure_time(|| {
-            $v
-        });
+        let (val, time) = $crate::util::measure_time(|| $v);
         println!("{} => {:?}", stringify!($v), time);
         val
     }};
@@ -199,17 +203,17 @@ impl CloseReceiver {
     }
 }
 
-pub fn spawn_owned_thread<T: Send + 'static>(name: String, func: impl Send + 'static + FnOnce(CloseReceiver) -> T) -> std::io::Result<(JoinHandle<T>, OwnedThreads)> {
+pub fn spawn_owned_thread<T: Send + 'static>(
+    name: String,
+    func: impl Send + 'static + FnOnce(CloseReceiver) -> T,
+) -> std::io::Result<(JoinHandle<T>, OwnedThreads)> {
     let closer = Arc::new(Once::new());
     let closed = Arc::clone(&closer);
 
     thread::Builder::new()
         .name(name)
-        .spawn(|| {
-            func(CloseReceiver {
-                closed
-            })
-        }).map(|handle| (handle, OwnedThreads { closer }))
+        .spawn(|| func(CloseReceiver { closed }))
+        .map(|handle| (handle, OwnedThreads { closer }))
 }
 
 pub trait OptionExt<T> {
@@ -221,7 +225,7 @@ impl<T> OptionExt<T> for Option<T> {
     fn is_none_or(self, f: impl FnOnce(T) -> bool) -> bool {
         match self {
             None => true,
-            Some(v) => f(v)
+            Some(v) => f(v),
         }
     }
 }
@@ -234,7 +238,13 @@ pub fn ffmpeg_err(result: c_int) -> Result<(), ffmpeg_next::Error> {
     }
 }
 
-pub fn precise_seek(input: &mut Input, decoder: &mut VideoDecoder, frame: &mut Video, stream_idx: usize, target_ts: i64) -> Result<(), ffmpeg_next::Error> {
+pub fn precise_seek(
+    input: &mut Input,
+    decoder: &mut VideoDecoder,
+    frame: &mut Video,
+    stream_idx: usize,
+    target_ts: i64,
+) -> Result<(), ffmpeg_next::Error> {
     unsafe {
         let result = av_seek_frame(
             input.as_mut_ptr(),
@@ -251,7 +261,9 @@ pub fn precise_seek(input: &mut Input, decoder: &mut VideoDecoder, frame: &mut V
     // println!("starting seek");
 
     loop {
-        let (packet_stream, mut packet) = input.packets().next().unwrap_or_else(|| todo!() /* not sure what to even do here. we do sometimes hit this part! */);
+        let (packet_stream, mut packet) = input.packets().next().unwrap_or_else(
+            || todo!(), /* not sure what to even do here. we do sometimes hit this part! */
+        );
         let is_target_pkt = packet.pts().unwrap_or_else(|| todo!()) >= target_ts;
 
         if packet_stream.index() != stream_idx {
@@ -270,7 +282,8 @@ pub fn precise_seek(input: &mut Input, decoder: &mut VideoDecoder, frame: &mut V
             }
         }
 
-        decoder.send_packet(&packet);
+        // todo: only allow "not yet available" errors and throw others
+        let _ = decoder.send_packet(&packet);
         if is_target_pkt {
             // if this packet is our target, then try to read it and output the frame
             //  if the frame is not yet available, we'll just continue this loop
@@ -286,9 +299,7 @@ pub fn precise_seek(input: &mut Input, decoder: &mut VideoDecoder, frame: &mut V
 }
 
 pub fn rescale(ts: i64, from: Rational, to: Rational) -> i64 {
-    unsafe {
-        av_rescale_q(ts, from.into(), to.into())
-    }
+    unsafe { av_rescale_q(ts, from.into(), to.into()) }
 }
 
 pub fn f32_cmp(a: f32, b: f32) -> Ordering {
@@ -327,13 +338,8 @@ impl<T> AnyExt for T {}
 #[cfg(feature = "async")]
 mod async_util {
     use std::future::Future;
-    use std::pin::Pin;
-    use std::task::{Context, Poll};
 
-    use replace_with::{replace_with_or_abort, replace_with_or_abort_and_return};
     use tokio::sync::oneshot;
-    use tokio::sync::oneshot::error::TryRecvError;
-    use tokio::task::JoinHandle;
 
     #[cfg(feature = "async")]
     pub struct AsyncCanceler {
@@ -344,7 +350,7 @@ mod async_util {
     impl AsyncCanceler {
         pub fn new(send_cancel: oneshot::Sender<()>) -> Self {
             Self {
-                send: Some(send_cancel)
+                send: Some(send_cancel),
             }
         }
     }
@@ -378,17 +384,17 @@ mod async_util {
     impl<T> Promise<T> {
         pub fn complete(value: T) -> Self {
             Self {
-                inner: PromiseInner::Complete(value)
+                inner: PromiseInner::Complete(value),
             }
         }
 
         pub fn wrap(recv: oneshot::Receiver<T>) -> Self {
             Self {
-                inner: PromiseInner::Waiting(recv)
+                inner: PromiseInner::Waiting(recv),
             }
         }
 
-        pub fn spawn(future: impl Future<Output=T> + 'static + Send) -> Self
+        pub fn spawn(future: impl Future<Output = T> + 'static + Send) -> Self
         where
             T: Send + 'static,
         {
@@ -402,21 +408,17 @@ mod async_util {
 
         pub fn get(&mut self) -> Option<&mut T> {
             match &mut self.inner {
-                PromiseInner::Complete(_) => {},
-                PromiseInner::Waiting(recv) => {
-                    match recv.try_recv() {
-                        Ok(v) => {
-                            self.inner = PromiseInner::Complete(v);
-                        }
-                        Err(_) => {
-                            return None
-                        }
+                PromiseInner::Complete(_) => {}
+                PromiseInner::Waiting(recv) => match recv.try_recv() {
+                    Ok(v) => {
+                        self.inner = PromiseInner::Complete(v);
                     }
-                }
+                    Err(_) => return None,
+                },
             }
             match &mut self.inner {
                 PromiseInner::Complete(v) => Some(v),
-                PromiseInner::Waiting(_) => unreachable!()
+                PromiseInner::Waiting(_) => unreachable!(),
             }
         }
 
@@ -440,14 +442,14 @@ mod async_util {
             }
             match &mut self.inner {
                 PromiseInner::Complete(v) => v,
-                PromiseInner::Waiting(_) => unreachable!()
+                PromiseInner::Waiting(_) => unreachable!(),
             }
         }
 
         pub async fn take_await_value(self) -> T {
             match self.inner {
                 PromiseInner::Complete(v) => v,
-                PromiseInner::Waiting(recv) => recv.await.unwrap_or_else(|_| todo!())
+                PromiseInner::Waiting(recv) => recv.await.unwrap_or_else(|_| todo!()),
             }
         }
     }
@@ -513,22 +515,20 @@ cheap_clone_impl!(
 pub fn result2flow<T, E>(result: Result<T, E>) -> ControlFlow<E, T> {
     match result {
         Ok(v) => ControlFlow::Continue(v),
-        Err(e) => ControlFlow::Break(e)
+        Err(e) => ControlFlow::Break(e),
     }
 }
 
-pub fn lock_ignore_poison<'a, T>(mutex: &'a Mutex<T>) -> MutexGuard<'a, T> {
+pub fn lock_ignore_poison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     match mutex.lock() {
         Ok(v) => v,
-        Err(p) => {
-            p.into_inner()
-        }
+        Err(p) => p.into_inner(),
     }
 }
 
 pub fn report_err(action: &str, err: &impl Error) {
-    let backtrace = request_ref::<Backtrace>(err)
-        .filter(|b| matches!(b.status(), BacktraceStatus::Captured));
+    let backtrace =
+        request_ref::<Backtrace>(err).filter(|b| matches!(b.status(), BacktraceStatus::Captured));
     if let Some(backtrace) = backtrace {
         error!("error while `{action}`: {err}\n{}", backtrace)
     } else {

@@ -1,4 +1,3 @@
-use std::{env, panic, thread};
 use std::any::Any;
 use std::backtrace::{Backtrace, BacktraceStatus};
 use std::cmp::min;
@@ -8,12 +7,11 @@ use std::fs::File;
 use std::io::Write;
 use std::sync::mpsc;
 use std::sync::mpsc::Sender;
-use std::time::{Instant, SystemTime};
+use std::{env, panic, thread};
 
-use backtrace::SymbolName;
 use log::{info, LevelFilter, Log, Metadata, Record};
 use simple_logger::SimpleLogger;
-use time::{OffsetDateTime, PrimitiveDateTime};
+use time::OffsetDateTime;
 
 use crate::storage;
 use crate::util::{CheapClone, FnDisplay};
@@ -49,11 +47,9 @@ impl Log for Logger {
             let args = record.args();
 
             // todo: handle err?
-            let _ = self.sender.send(
-                format!(
-                    "{level:<5} [{target}{thread}] {args}"
-                )
-            );
+            let _ = self
+                .sender
+                .send(format!("{level:<5} [{target}{thread}] {args}"));
             self.inner.log(record)
         }
     }
@@ -69,7 +65,7 @@ fn test_backtraces() -> bool {
 }
 
 fn var_truthy(var: &str) -> bool {
-    const TRUTHY: &[&'static str] = &["true", "1", "on"];
+    const TRUTHY: &[&str] = &["true", "1", "on"];
 
     env::var_os(var).is_some_and(|str| {
         let str = str.as_os_str();
@@ -85,9 +81,7 @@ pub fn init_logging() {
     } else {
         LevelFilter::Warn
     };
-    let cap_level = |level: LevelFilter| {
-        min(base_level, level)
-    };
+    let cap_level = |level: LevelFilter| min(base_level, level);
 
     let inner_logger = SimpleLogger::new()
         .with_colors(true)
@@ -113,7 +107,10 @@ pub fn init_logging() {
                 let hour = now.hour();
                 let minute = now.minute();
 
-                let _ = writeln!(&mut file, "\t\t\t\t {year}/{month:0>2}/{day:0>2} {hour:0>2}:{minute:0>2}\tUTC");
+                let _ = writeln!(
+                    &mut file,
+                    "\t\t\t\t {year}/{month:0>2}/{day:0>2} {hour:0>2}:{minute:0>2}\tUTC"
+                );
                 let _ = writeln!(&mut file, "\t\t\t\t YYYY/MM/DD HH:MM\tUTC");
                 let _ = writeln!(&mut file);
             }
@@ -164,9 +161,7 @@ fn setup_file_panic_hook(send: Sender<String>) {
         });
         let msg = payload_str(info.payload());
 
-        let mut str = format!(
-            "PANIC thread '{thread}' at {location}:\n\t\t\t\t{msg}"
-        );
+        let mut str = format!("PANIC thread '{thread}' at {location}:\n\t\t\t\t{msg}");
 
         if custom_backtraces {
             #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -208,13 +203,21 @@ fn setup_file_panic_hook(send: Sender<String>) {
                                 let location = f.filename().zip(f.lineno());
                                 let location = FnDisplay(|f| {
                                     if let Some((filename, lineno)) = location {
-                                        write!(f, "\n\t\t\t\t\t\t\tat {f}:{lineno}", f = filename.display())
+                                        write!(
+                                            f,
+                                            "\n\t\t\t\t\t\t\tat {f}:{lineno}",
+                                            f = filename.display()
+                                        )
                                     } else {
                                         Ok(())
                                     }
                                 });
 
-                                let _ = writeln!(str, "\t\t\t\t{index}: {name}{location}", index = i - 1);
+                                let _ = writeln!(
+                                    str,
+                                    "\t\t\t\t{index}: {name}{location}",
+                                    index = i - 1
+                                );
                             }
 
                             i += 1;
@@ -226,7 +229,10 @@ fn setup_file_panic_hook(send: Sender<String>) {
                 });
                 stage != Suffix
             });
-            let _ = writeln!(str, "\t\t\tomitted {prefix_len} prefix frames ::: omitted {suffix_len} suffix frames");
+            let _ = writeln!(
+                str,
+                "\t\t\tomitted {prefix_len} prefix frames ::: omitted {suffix_len} suffix frames"
+            );
         } else {
             let _ = write!(&mut str, "\n{}", Backtrace::capture());
         }
@@ -240,7 +246,7 @@ fn payload_str(payload: &dyn Any) -> &str {
     if let Some(&str) = payload.downcast_ref::<&'static str>() {
         str
     } else if let Some(string) = payload.downcast_ref::<String>() {
-        &string
+        string
     } else {
         "<no message>"
     }

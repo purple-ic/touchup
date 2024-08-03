@@ -1,22 +1,24 @@
 use std::mem;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
 use std::time::Duration;
 
 use eframe::emath::{Pos2, Rect};
 use eframe::epaint::TextureId;
 use eframe::Frame;
-use egui::{Align, Align2, Button, Color32, Context, CursorIcon, FontId, Image, include_image, Layout, RichText, Sense, Ui, Vec2, Widget, WidgetText};
-use egui::load::ImageLoader;
+use egui::{
+    include_image, Align, Align2, Button, Color32, Context, CursorIcon, FontId, Image, Layout,
+    RichText, Sense, Ui, Vec2, Widget, WidgetText,
+};
 
-use crate::{AuthArc, MessageManager, TextureArc};
-use crate::task::{Task, TaskCommand, TaskStage, TaskStatus};
 use crate::editor::EditorExit::ToSelectScreen;
 use crate::export::ExportFollowUp;
-use crate::player::{PlayerUI, write_duration};
+use crate::player::{write_duration, PlayerUI};
+use crate::task::{Task, TaskCommand, TaskStage, TaskStatus};
 use crate::util::Updatable;
+use crate::{AuthArc, MessageManager, TextureArc};
 
 pub struct Editor {
     player: PlayerUI,
@@ -34,7 +36,13 @@ pub enum EditorExit {
 }
 
 impl Editor {
-    pub fn new(ctx: &Context, msg: MessageManager, path: PathBuf, frame: &mut Frame, texture: TextureArc) -> Option<Self> {
+    pub fn new(
+        ctx: &Context,
+        msg: MessageManager,
+        path: PathBuf,
+        frame: &mut Frame,
+        texture: TextureArc,
+    ) -> Option<Self> {
         let player = PlayerUI::new(ctx, msg, &path, frame, texture)?;
 
         Some(Editor {
@@ -75,7 +83,6 @@ impl Editor {
         self.player.draw(&self.trim, ui, current_texture);
         ui.add_space(15.);
 
-        let total_width = ui.available_width();
         let old_audio_track = self.current_audio_track;
 
         // only show the audio track selector when there is more than one
@@ -87,11 +94,7 @@ impl Editor {
                     let mut columns = columns.iter_mut();
                     {
                         let ui = columns.next().unwrap_or_else(|| unreachable!());
-                        ui.radio_value(
-                            &mut self.current_audio_track,
-                            None,
-                            "None",
-                        );
+                        ui.radio_value(&mut self.current_audio_track, None, "None");
                     }
                     // let width_per_column = total_width / columns.len() as f32;
                     for (i, ui) in columns.enumerate() {
@@ -113,11 +116,7 @@ impl Editor {
             ui.with_layout(Layout::top_down(Align::Center), |ui| {
                 ui.checkbox(&mut enable_audio, "Enable audio")
             });
-            self.current_audio_track = if enable_audio {
-                Some(0)
-            } else {
-                None
-            };
+            self.current_audio_track = if enable_audio { Some(0) } else { None };
             ui.add_space(15.);
         }
         if old_audio_track != self.current_audio_track {
@@ -129,14 +128,17 @@ impl Editor {
 
             let old_trim = self.trim.clone();
             let real_pos_now = self.player.real_pos().as_secs_f32();
-            let out = ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
-                ui.set_max_width(ui.available_width() - 64.);
-                Trimmer {
-                    range: &mut self.trim,
-                    max: self.player.duration().as_secs_f32(),
-                    cursor_pos: real_pos_now,
-                }.show(ui)
-            }).inner;
+            let out = ui
+                .with_layout(Layout::left_to_right(Align::Min), |ui| {
+                    ui.set_max_width(ui.available_width() - 64.);
+                    Trimmer {
+                        range: &mut self.trim,
+                        max: self.player.duration().as_secs_f32(),
+                        cursor_pos: real_pos_now,
+                    }
+                    .show(ui)
+                })
+                .inner;
             let clamp_real_pos = || {
                 Duration::from_secs_f32(real_pos_now.clamp(*self.trim.start(), *self.trim.end()))
             };
@@ -144,10 +146,8 @@ impl Editor {
                 self.player.update_preview(clamp_real_pos());
                 self.player.enable_preview_mode();
             }
-            if out.range_changed {
-                if self.player.preview_mode() {
-                    self.player.seek_to(clamp_real_pos())
-                }
+            if out.range_changed && self.player.preview_mode() {
+                self.player.seek_to(clamp_real_pos())
             }
             match out.cursor {
                 CursorUpdate::Dormant => {}
@@ -155,9 +155,7 @@ impl Editor {
                     self.player.enable_preview_mode();
                     self.player.update_preview(Duration::from_secs_f32(pos))
                 }
-                CursorUpdate::Done(pos) => {
-                    self.player.seek_to(Duration::from_secs_f32(pos))
-                }
+                CursorUpdate::Done(pos) => self.player.seek_to(Duration::from_secs_f32(pos)),
             }
         });
         let mut export = |task_id: &mut u32, path: &mut PathBuf, follow_up: ExportFollowUp| {
@@ -174,13 +172,12 @@ impl Editor {
             let path = mem::take(path);
             let name: String = String::from(path.file_stem().unwrap_or_default().to_string_lossy());
             #[cfg(feature = "async")]
-            let (cancel_send, cancel_recv) =
-                if follow_up.needs_async_stopper() {
-                    Some(tokio::sync::oneshot::channel())
-                } else {
-                    None
-                }.unzip();
-
+            let (cancel_send, cancel_recv) = if follow_up.needs_async_stopper() {
+                Some(tokio::sync::oneshot::channel())
+            } else {
+                None
+            }
+            .unzip();
 
             self.player.export(
                 (*self.trim.start(), *self.trim.end()),
@@ -189,7 +186,7 @@ impl Editor {
                 path,
                 id,
                 #[cfg(any(feature = "youtube"))]
-                Arc::clone(&auth),
+                Arc::clone(auth),
                 #[cfg(not(any(feature = "youtube")))]
                 (),
                 follow_up,
@@ -237,7 +234,6 @@ impl Editor {
                             send_final: Some(send),
                             // task_id will be incremented later, in the `export` closure
                             task_id: *task_id,
-                            next_frame_request_focus: false,
                         },
                     });
 
@@ -274,10 +270,10 @@ pub struct Trimmer<'a> {
 }
 
 impl<'a> Trimmer<'a> {
-    pub fn show(mut self, ui: &mut Ui) -> TrimmerOutput {
+    pub fn show(self, ui: &mut Ui) -> TrimmerOutput {
         let mut out = TrimmerOutput::default();
 
-        let (id, rect) = ui.allocate_space(Vec2::new(ui.available_width(), 64.));
+        let (_id, rect) = ui.allocate_space(Vec2::new(ui.available_width(), 64.));
 
         let inner_rect = Rect::from_min_max(
             Pos2::new(
@@ -299,22 +295,21 @@ impl<'a> Trimmer<'a> {
             painter.rect_filled(inner_rect, 5., Color32::LIGHT_BLUE);
             let make_cursor_rect = |cursor_pos: f32| {
                 let cursor_x = rect.min.x
-                    + cursor_pos
-                    .clamp(*self.range.start(), *self.range.end())
-                    / self.max
-                    * rect.width();
+                    + cursor_pos.clamp(*self.range.start(), *self.range.end()) / self.max
+                        * rect.width();
                 Rect::from_min_max(
                     Pos2::new(cursor_x, rect.min.y - 10.),
                     Pos2::new(cursor_x, rect.max.y + 3.),
                 )
-                    .expand2(Vec2::new(2., 0.))
+                .expand2(Vec2::new(2., 0.))
             };
             let mut cursor_rect = make_cursor_rect(self.cursor_pos);
             let cursor_r = ui
                 .interact(cursor_rect, ui.next_auto_id(), Sense::drag())
                 .on_hover_cursor(CursorIcon::ResizeHorizontal);
             if let Some(pos) = cursor_r.interact_pointer_pos() {
-                let new_pos = ((pos.x - rect.min.x) / rect.width() * self.max).clamp(*self.range.start(), *self.range.end());
+                let new_pos = ((pos.x - rect.min.x) / rect.width() * self.max)
+                    .clamp(*self.range.start(), *self.range.end());
                 if cursor_r.drag_stopped() {
                     out.cursor = CursorUpdate::Done(new_pos)
                 } else {
@@ -331,7 +326,7 @@ impl<'a> Trimmer<'a> {
                     Pos2::new(x, inner_rect.min.y),
                     Pos2::new(x, inner_rect.max.y),
                 )
-                    .expand2(Vec2::new(5., 5.));
+                .expand2(Vec2::new(5., 5.));
                 painter.rect(
                     r,
                     2.,
@@ -339,7 +334,8 @@ impl<'a> Trimmer<'a> {
                     (1., Color32::BLACK),
                 );
                 let mut str = String::new();
-                write_duration(Duration::from_secs_f32(current), &mut str).expect("writing duration to String should not fail");
+                write_duration(Duration::from_secs_f32(current), &mut str)
+                    .expect("writing duration to String should not fail");
                 painter.text(
                     r.center_bottom(),
                     Align2::CENTER_TOP,
