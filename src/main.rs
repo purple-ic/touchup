@@ -720,12 +720,12 @@ impl MessageManager {
             error!("(no backtrace) error at stage `{stage}`: {err}")
         }
         self.show_blocking(
-            format!("An error occurred during {stage}:\n{err}")
+            format!("An error occurred while {stage}:\n{err}")
         );
     }
 
-    pub fn handle_err<E: Error, R>(&self, stage: &str, func: impl FnOnce() -> Result<R, E>) -> Option<R> {
-        match func() {
+    pub fn handle_err<E: Error, R>(&self, stage: &str, func: impl FnOnce(&Self) -> Result<R, E>) -> Option<R> {
+        match func(self) {
             Ok(v) => Some(v),
             Err(err) => {
                 self._handle_err(stage, err);

@@ -2,6 +2,8 @@ use std::{iter, mem, thread};
 use std::cmp::Ordering;
 use std::error::Error;
 use std::ffi::c_int;
+use std::ops::ControlFlow;
+use std::rc::Rc;
 use std::sync::{Arc, mpsc, Once};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError};
 use std::thread::JoinHandle;
@@ -165,6 +167,13 @@ pub struct OwnedThreads {
     closer: Arc<Once>,
 }
 
+impl OwnedThreads {
+    pub fn ref_count(&self) -> usize {
+        // we sub 1 because the count includes the current reference aswell
+        Arc::strong_count(&self.closer).saturating_sub(1)
+    }
+}
+
 impl Drop for OwnedThreads {
     fn drop(&mut self) {
         self.closer.call_once(|| ());
@@ -215,7 +224,15 @@ impl<T> OptionExt<T> for Option<T> {
     }
 }
 
-pub fn precise_seek(input: &mut Input, decoder: &mut VideoDecoder, frame: &mut Video, stream_idx: usize, target_ts: i64) {
+pub fn ffmpeg_err(result: c_int) -> Result<(), ffmpeg_next::Error> {
+    if result < 0 {
+        Err(ffmpeg_next::Error::from(result))
+    } else {
+        Ok(())
+    }
+}
+
+pub fn precise_seek(input: &mut Input, decoder: &mut VideoDecoder, frame: &mut Video, stream_idx: usize, target_ts: i64) -> Result<(), ffmpeg_next::Error> {
     unsafe {
         let result = av_seek_frame(
             input.as_mut_ptr(),
@@ -224,9 +241,7 @@ pub fn precise_seek(input: &mut Input, decoder: &mut VideoDecoder, frame: &mut V
             target_ts,
             AVSEEK_FLAG_BACKWARD,
         );
-        if result < 0 {
-            panic!("ffmpeg err when seeking: {result}")
-        }
+        ffmpeg_err(result)?;
     }
 
     decoder.flush();
@@ -234,7 +249,7 @@ pub fn precise_seek(input: &mut Input, decoder: &mut VideoDecoder, frame: &mut V
     // println!("starting seek");
 
     loop {
-        let (packet_stream, mut packet) = input.packets().next().unwrap_or_else(|| todo!());
+        let (packet_stream, mut packet) = input.packets().next().unwrap_or_else(|| todo!() /* not sure what to even do here. we do sometimes hit this part! */);
         let is_target_pkt = packet.pts().unwrap_or_else(|| todo!()) >= target_ts;
 
         if packet_stream.index() != stream_idx {
@@ -258,7 +273,7 @@ pub fn precise_seek(input: &mut Input, decoder: &mut VideoDecoder, frame: &mut V
             // if this packet is our target, then try to read it and output the frame
             //  if the frame is not yet available, we'll just continue this loop
             if decoder.receive_frame(frame).is_ok() {
-                break;
+                break Ok(());
             }
         } else {
             // if this packet is not our target, then exhaust the decoder's frames
@@ -490,3 +505,10 @@ cheap_clone_impl!(
     <T> SyncSender<T>,
     Context,
 );
+
+pub fn result2flow<T, E>(result: Result<T, E>) -> ControlFlow<E, T> {
+    match result {
+        Ok(v) => ControlFlow::Continue(v),
+        Err(e) => ControlFlow::Break(e)
+    }
+}

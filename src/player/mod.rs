@@ -32,6 +32,10 @@ pub struct PlayerUI {
 }
 
 impl PlayerUI {
+    pub fn is_closed(&self) -> bool {
+        self.player.is_closed()
+    }
+
     pub fn export(
         &self,
         trim: (f32, f32),
@@ -107,7 +111,7 @@ impl PlayerUI {
                         file = path
                             .as_ref()
                             .file_name()
-                            .unwrap()
+                            .expect("user should not be able to choose an input path that doesn't have a filename")
                             .to_str()
                             .unwrap_or("<filename cannot be displayed>")
                     ))
@@ -131,7 +135,7 @@ impl PlayerUI {
                 path.as_ref().into(),
                 if enable_sound { volume } else { 0. },
                 texture
-            ),
+            )?,
             last_preview: None,
             force_controls: false,
             volume,
@@ -250,11 +254,11 @@ impl PlayerUI {
         let video_pos = real_vid_pos.saturating_sub(Duration::from_secs_f32(*trim.start()));
         let duration = Duration::from_secs_f32(trim.end() - trim.start());
 
-        write_duration(video_pos, &mut str).unwrap();
+        write_duration(video_pos, &mut str).expect("duration write should not fail when writing to String");
         Label::new(str).selectable(false).ui(ui);
 
         let mut str = String::new();
-        write_duration(duration, &mut str).unwrap();
+        write_duration(duration, &mut str).expect("duration write should not fail when writing to String");
         let dur_text = WidgetText::from(str);
         let dur_galley =
             dur_text.into_galley(ui, None, ui.available_width(), FontSelection::Default);

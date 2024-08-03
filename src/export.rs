@@ -82,7 +82,7 @@ impl ExportFollowUp {
                     .unwrap_or(true);
                 let ctx = Context::clone(&ctx);
                 let msg2 = msg.cheap_clone();
-                let task = msg.handle_err_spawn("YouTube upload", async move {
+                let task = msg.handle_err_spawn("uploading to YouTube", async move {
                     let msg = msg2;
                     let mut file = tokio::fs::File::open(&output_file).await.map_err(|err| ExportError::OpenOutputFile { path: output_file.clone() /* technically we can do without cloning but it wouldnt be pretty */, err })?;
                     let auth = auth.read();
@@ -283,7 +283,7 @@ pub fn video_transcoder(
 
     let mut frame = VideoFrame::empty();
 
-    precise_seek(input, &mut decoder, &mut frame, in_stream_idx, start_ts);
+    precise_seek(input, &mut decoder, &mut frame, in_stream_idx, start_ts)?;
 
     Ok(Transcoder {
         start: start_ts,

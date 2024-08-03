@@ -1,4 +1,6 @@
+use std::backtrace::Backtrace;
 use std::cmp::min;
+use std::convert::identity;
 use std::ffi::c_int;
 use std::mem::size_of;
 use std::ops::{ControlFlow, RangeInclusive};
@@ -28,6 +30,7 @@ use ffmpeg_next::codec::decoder::video::Video as VideoDecoder;
 use ffmpeg_next::software::resampling::context::Context as Resampler;
 use ffmpeg_next::software::scaling::Context as Scaler;
 use rodio::{OutputStream, Sink, Source};
+use thiserror::Error;
 
 use VideoTime::PausedAt;
 
@@ -35,10 +38,7 @@ use crate::{AuthArc, MessageManager, PlayerTexture, TaskCommand, TaskStatus, Tex
 use crate::export::{export, ExportFollowUp};
 use crate::player::r#impl::PlayerCommand::UpdatePreview;
 use crate::player::r#impl::VideoTime::Anchored;
-use crate::util::{
-    CloseReceiver, OwnedThreads, precise_seek, RationalExt, spawn_owned_thread, time_diff,
-    Updatable,
-};
+use crate::util::{CloseReceiver, OwnedThreads, precise_seek, RationalExt, result2flow, spawn_owned_thread, time_diff, Updatable};
 use crate::util::CheapClone;
 
 // #[derive(Debug)]
@@ -110,6 +110,20 @@ pub struct Player {
     change_volume: Sender<f32>,
 }
 
+#[derive(Error, Debug)]
+pub enum PlayerError {
+    #[error("Received an error from FFmpeg: {0}")]
+    FFmpeg(#[from] ffmpeg_next::Error, Backtrace),
+    #[error("The provided video file has no video stream")]
+    NoVideoStream,
+    #[error("Could not initialize audio output: {0}")]
+    // no backtrace since there's only one place this can originate
+    RodioStream(#[from] rodio::StreamError),
+    #[error("Could not begin playing audio: {0}")]
+    // no backtrace since there's only one place this can originate
+    RodioPlay(#[from] rodio::PlayError)
+}
+
 struct PlayerStartupInfo {
     resolution: [usize; 2],
     frame_time: Duration,
@@ -139,15 +153,20 @@ fn set_stream_discard(stream: &mut StreamMut, discard: AVDiscard) {
     }
 }
 
-fn new_audio_decoder(audio_stream: &Stream) -> AudioDecoder {
-    CodecContext::from_parameters(audio_stream.parameters())
-        .unwrap_or_else(|err| todo!("could not get decoder: {err}"))
+fn new_audio_decoder(audio_stream: &Stream) -> Result<AudioDecoder, PlayerError> {
+    CodecContext::from_parameters(audio_stream.parameters())?
         .decoder()
         .audio()
-        .unwrap_or_else(|e| todo!("{e:?}"))
+        .map_err(Into::into)
 }
 
 impl Player {
+    pub fn is_closed(&self) -> bool {
+        let ref_c = self.threads.ref_count();
+        debug_assert!(ref_c <= 2, "reference count (={ref_c}) should not be >2");
+        ref_c < 2
+    }
+
     pub fn change_volume(&self, volume: f32) {
         self.change_volume.send(volume).unwrap()
     }
@@ -192,14 +211,13 @@ impl Player {
             self.preview_mode = true;
             let new_time = self.time.get().now();
             self.time.replace_current(PausedAt(new_time));
-            self.commands
-                .send(PlayerCommand::EnablePreviewMode)
-                .unwrap()
+            let _ = self.commands
+                .send(PlayerCommand::EnablePreviewMode);
         }
     }
 
     pub fn set_audio_track(&self, idx: Option<usize>) {
-        self.change_audio_track.send(idx).unwrap()
+        let _ = self.change_audio_track.send(idx);
     }
 
     pub fn nb_audio_tracks(&self) -> usize {
@@ -209,7 +227,7 @@ impl Player {
     pub fn seek_to(&mut self, time: Duration) {
         self.preview_mode = false;
         self.time.replace_current(PausedAt(time));
-        self.commands.send(PlayerCommand::SeekTo(time)).unwrap();
+        let _ = self.commands.send(PlayerCommand::SeekTo(time));
     }
 
     pub fn duration(&self) -> Duration {
@@ -258,27 +276,29 @@ impl Player {
         *self.time.get()
     }
 
-    pub fn new(gui_ctx: Context, msg: MessageManager, input: Input, input_path: PathBuf, starting_volume: f32, texture: TextureArc) -> Self {
+    pub fn new(gui_ctx: Context, msg: MessageManager, input: Input, input_path: PathBuf, starting_volume: f32, texture: TextureArc) -> Option<Self> {
         let (info_send, info_recv) = mpsc::channel();
         let (commands_send, commands_recv) = mpsc::sync_channel(20);
         let (time_updater, time) = Updatable::new(PausedAt(Duration::ZERO));
         let (change_audio_track, audio_track_changes) = mpsc::channel();
         let (change_volume, volume) = Updatable::new(starting_volume);
 
-        let thread_owner = spawn_owned_thread("video".into(), |closer| {
-            Self::setup(
-                gui_ctx,
-                msg,
-                input,
-                input_path,
-                info_send,
-                commands_recv,
-                time_updater,
-                closer,
-                audio_track_changes,
-                volume,
-                texture
-            );
+        let thread_owner = spawn_owned_thread("video".into(), move |closer| {
+            msg.handle_err("playing or setting up video", |msg| {
+                Self::setup(
+                    gui_ctx,
+                    msg.cheap_clone(),
+                    input,
+                    input_path,
+                    info_send,
+                    commands_recv,
+                    time_updater,
+                    closer,
+                    audio_track_changes,
+                    volume,
+                    texture
+                )
+            });
         })
             .unwrap()
             .1;
@@ -287,9 +307,9 @@ impl Player {
             frame_time,
             duration,
             audio_tracks,
-        } = info_recv.recv().unwrap();
+        } = info_recv.recv().ok()?;
 
-        Self {
+        Some(Self {
             resolution,
             frame_time,
             commands: commands_send,
@@ -301,7 +321,7 @@ impl Player {
             audio_tracks,
             preview_mode: false,
             change_volume,
-        }
+        })
     }
 
     fn setup(
@@ -316,7 +336,7 @@ impl Player {
         audio_track_changes: Receiver<Option<usize>>,
         volume: Updatable<f32>,
         texture: TextureArc
-    ) {
+    ) -> Result<(), PlayerError> {
         let audio_stream_idx = input.streams().find(is_audio).map(|stream| stream.index());
         let mut audio_tracks = if audio_stream_idx.is_some() {
             1
@@ -332,8 +352,8 @@ impl Player {
             set_stream_discard(&mut stream, AVDISCARD_ALL)
         }
 
-        let video_stream = input.streams().best(MediaType::Video).unwrap();
-        let audio_stream = audio_stream_idx.map(|idx| input.stream(idx).unwrap());
+        let video_stream = input.streams().best(MediaType::Video).ok_or(PlayerError::NoVideoStream)?;
+        let audio_stream = audio_stream_idx.map(|idx| input.stream(idx).expect("audio_stream_idx should point to the correct idx"));
 
         let video_stream_idx = video_stream.index();
 
@@ -344,15 +364,19 @@ impl Player {
         let (audio_send, audio_recv) = mpsc::sync_channel(5);
 
         let make_video_decoder = || {
-            CodecContext::from_parameters(video_stream.parameters())
-                .unwrap_or_else(|err| todo!("could not get decoder: {err}"))
+            CodecContext::from_parameters(video_stream.parameters())?
                 .decoder()
                 .video()
-                .unwrap_or_else(|e| todo!("{e}"))
+                .map_err(PlayerError::from)
         };
-        let video_decoder = make_video_decoder();
+        let video_decoder = make_video_decoder()?;
 
-        let audio_decoder = audio_stream.as_ref().map(|audio_stream| new_audio_decoder(audio_stream));
+        let audio_decoder = match &audio_stream {
+            None => None,
+            Some(audio_stream) => {
+                Some(new_audio_decoder(audio_stream)?)
+            }
+        };
 
         let resolution = [video_decoder.width(), video_decoder.height()];
 
@@ -360,19 +384,23 @@ impl Player {
             .converter(
                 // convert to rgb24 pixel format and keep the same resolution
                 Pixel::RGB24,
-            )
-            .unwrap_or_else(|e| todo!("could not create scaler: {e}"));
+            )?;
 
-        let resampler = audio_decoder.as_ref().map(|audio_decoder| audio_decoder.resampler(
-            Sample::F32(Type::Packed /* packed = interleaved (rodio only supports interleaved sample formats) */), audio_decoder.channel_layout(), audio_decoder.rate(),
-        ).unwrap_or_else(|e| todo!("could not create resampler: {e}")));
+        let resampler = match &audio_decoder {
+            None => None,
+            Some(audio_decoder) => {
+                Some(audio_decoder.resampler(
+                    Sample::F32(Type::Packed /* packed = interleaved (rodio only supports interleaved sample formats) */), audio_decoder.channel_layout(), audio_decoder.rate(),
+                )?)
+            }
+        };
 
         let avg_frame_rate = video_stream.avg_frame_rate();
         let frame_time = Duration::from_secs_f64(avg_frame_rate.invert().value_f64());
         let input_mutex = Arc::new(Mutex::new((input, LastTs { stream: 0, ts: 0 })));
 
         // set up our audio output
-        let (audio_output_stream, audio_output) = OutputStream::try_default().unwrap();
+        let (audio_output_stream, audio_output) = OutputStream::try_default()?;
 
         let (audio_request_flush, audio_flush_requests) = mpsc::channel::<()>();
 
@@ -391,9 +419,10 @@ impl Player {
             closer: closer.cheap_clone(),
             audio_track_changes,
             volume,
+            msg: msg.cheap_clone()
         };
 
-        let sink = Sink::try_new(&audio_output).unwrap();
+        let sink = Sink::try_new(&audio_output)?;
         sink.append(audio_manager);
 
         let mut video_manager = VideoManager {
@@ -434,7 +463,7 @@ impl Player {
             })
             .unwrap();
 
-        video_manager.begin_loop();
+        video_manager.begin_loop()?;
 
         // make sure rust only drops our streams at the end
         //      otherwise rust attempts to make their lifetimes as
@@ -443,6 +472,7 @@ impl Player {
         //      audio streams (that disconnects the stream and turns off the sound)
         drop((audio_output_stream, audio_output));
         println!("ending video thread");
+        Ok(())
     }
 }
 
@@ -564,7 +594,7 @@ impl VideoManager {
         sec2ts(self.ts_rate, self.time.now().as_secs_f64())
     }
 
-    fn precise_seek(&mut self, pause: bool, target: Duration) {
+    fn precise_seek(&mut self, pause: bool, target: Duration) -> Result<(), PlayerError> {
         self.audio_request_flush.send(()).unwrap();
 
         let anchor_old = self.time.now();
@@ -586,10 +616,9 @@ impl VideoManager {
             &mut self.frame,
             self.stream_idx,
             target_ts,
-        );
+        )?;
         if pause {
-            self.scaler.run(&self.frame, &mut self.frame_scaled)
-                .unwrap();
+            self.scaler.run(&self.frame, &mut self.frame_scaled)?;
             let mut tex = self.texture.lock().unwrap();
             update_texture(&self.frame_scaled, &mut tex);
         }
@@ -606,9 +635,11 @@ impl VideoManager {
         self.time_updater.send(self.time);
         self.gui_ctx.request_repaint();
         println!("jumped {:?}", time_diff(new_frame_time, anchor_old));
+
+        Ok(())
     }
 
-    fn update_preview(&mut self, time: Duration) {
+    fn update_preview(&mut self, time: Duration) -> Result<(), PlayerError> {
         let mut input = self.input_mutex.lock().unwrap();
         self.decoder.flush();
         unsafe {
@@ -638,28 +669,33 @@ impl VideoManager {
         drop(input);
         self.decoder.flush();
         self.scaler
-            .run(&self.frame, &mut self.frame_scaled)
-            .unwrap();
+            .run(&self.frame, &mut self.frame_scaled)?;
         let mut tex = self.texture.lock().unwrap();
         update_texture(&self.frame_scaled, &mut *tex);
+
+        Ok(())
     }
 
-    fn preview_mode(&mut self, was_paused: bool) {
+    fn preview_mode(&mut self, was_paused: bool) -> Result<(), PlayerError> {
         self.audio_sink.pause();
         while let Ok(command) = self.commands_recv.recv() {
             // println!("processing command (during preview mode): {command:?}");
             match command {
                 PlayerCommand::SeekTo(target) => {
-                    self.precise_seek(was_paused, target);
+                    self.precise_seek(was_paused, target)?;
                     if !was_paused {
                         self.audio_sink.play();
                     }
                     break;
                 }
-                PlayerCommand::UpdatePreview(target) => self.update_preview(target),
+                PlayerCommand::UpdatePreview(target) => {
+                    self.update_preview(target)?;
+                },
                 _ => {}
             }
         }
+
+        Ok(())
     }
 
     fn export(
@@ -691,14 +727,13 @@ impl VideoManager {
                         .streams()
                         .filter(is_audio)
                         .nth(audio_track)
-                        .unwrap()
+                        .expect("audio_track should point to an existing audio track but there aren't enough")
                         .index()
                     );
-                let msg2 = msg.cheap_clone();
-                msg.handle_err("export", move || {
+                msg.handle_err("exporting", move |msg| {
                     export(
                         ctx,
-                        msg2,
+                        msg.cheap_clone(),
                         &mut input.0,
                         trim,
                         stream_idx,
@@ -718,7 +753,7 @@ impl VideoManager {
     }
 
     #[must_use]
-    fn process_command(&mut self, paused: bool, command: PlayerCommand) -> ControlFlow<()> {
+    fn process_command(&mut self, paused: bool, command: PlayerCommand) -> ControlFlow<Option<PlayerError>> {
         // println!("processing command: {command:?}");
         match command {
             PlayerCommand::PauseUnpause => {
@@ -746,18 +781,18 @@ impl VideoManager {
                 self.audio_sink.play();
             }
             PlayerCommand::Skip15s => {
-                self.precise_seek(paused, self.time.now() + Duration::from_secs(15))
+                result2flow(self.precise_seek(paused, self.time.now() + Duration::from_secs(15)).map_err(Some))?
             }
-            PlayerCommand::Back15s => self.precise_seek(
+            PlayerCommand::Back15s => result2flow(self.precise_seek(
                 paused,
                 self.time.now().saturating_sub(Duration::from_secs(15)),
-            ),
-            PlayerCommand::SeekTo(time) => self.precise_seek(paused, time),
+            ).map_err(Some))?,
+            PlayerCommand::SeekTo(time) => result2flow(self.precise_seek(paused, time).map_err(Some))?,
             UpdatePreview(_) => {
                 // ignore the preview update request since we're not in preview mode
             }
             PlayerCommand::EnablePreviewMode => {
-                self.preview_mode(paused);
+                result2flow(self.preview_mode(paused).map_err(Some))?;
             }
             PlayerCommand::Export {
                 trim,
@@ -783,31 +818,35 @@ impl VideoManager {
                     #[cfg(feature = "async")]
                     cancel_recv,
                 );
-                return Break(());
+                return Break(None);
             }
         }
         Continue(())
     }
 
     #[must_use]
-    fn process_commands(&mut self) -> ControlFlow<()> {
+    fn process_commands(&mut self) -> ControlFlow<Option<PlayerError>> {
         while let Ok(command) = self.commands_recv.try_recv() {
             self.process_command(false, command)?;
         }
         Continue(())
     }
 
-    fn begin_loop(&mut self) {
+    fn begin_loop(&mut self) -> Result<(), PlayerError> {
         loop {
             if self.closer.should_close() {
                 let _ = self.process_commands();
-                break;
+                return Ok(());
             }
 
-            if let Break(()) = self.process_commands() {
-                break;
+            if let Break(reason) = self.process_commands() {
+                return if let Some(err) = reason {
+                    Err(err)
+                } else {
+                    Ok(())
+                }
             }
-            self.attempt_refresh();
+            self.attempt_refresh()?;
 
             let next_frame_sec =
                 Duration::from_secs_f64(ts2sec(self.ts_rate, self.frame.pts().unwrap_or(0)));
@@ -820,7 +859,7 @@ impl VideoManager {
         }
     }
 
-    fn attempt_refresh(&mut self) {
+    fn attempt_refresh(&mut self) -> Result<(), PlayerError> {
         let frame_pts = self.frame.pts().unwrap_or(0);
         let ts_now = self.ts_now();
 
@@ -833,7 +872,7 @@ impl VideoManager {
             // decode the next frame for later
             loop {
                 if self.decoder.receive_frame(&mut self.frame).is_ok() {
-                    if self.frame.pts().unwrap() < self.ts_now() {
+                    if self.frame.pts().unwrap_or_else(|| todo!()) < self.ts_now() {
                         continue;
                     }
                     #[cfg(print_fps)]
@@ -845,7 +884,7 @@ impl VideoManager {
                     let packet = match self.next_packet() {
                         None => {
                             self.frame_scaled = VideoFrame::empty();
-                            return;
+                            return Ok(());
                         }
                         Some(v) => v,
                     };
@@ -854,9 +893,10 @@ impl VideoManager {
             }
             // rescale our new frame
             self.scaler
-                .run(&self.frame, &mut self.frame_scaled)
-                .unwrap();
+                .run(&self.frame, &mut self.frame_scaled)?;
         }
+
+        Ok(())
     }
 }
 
@@ -919,6 +959,7 @@ struct AudioManager {
     resampler: Option<Resampler>,
 
     volume: Updatable<f32>,
+    msg: MessageManager
 }
 
 impl AudioManager {
@@ -937,25 +978,8 @@ impl AudioManager {
             None
         }
     }
-}
 
-impl Iterator for AudioManager {
-    type Item = f32;
-
-    fn next(&mut self) -> Option<Self::Item> {
-
-        // this is not strictly required since the audio stream will most likely be
-        //  dropped by the video thread, stopping the audio thread. but just in case
-        //  we'll end our iterator if we have to close
-        if self.closer.should_close() {
-            return None;
-        }
-        if let Ok(()) = self.flush_requests.try_recv() {
-            if let Some(decoder) = &mut self.decoder {
-                decoder.flush();
-            }
-        }
-
+    fn next_sample(&mut self) -> Result<Option<f32>, PlayerError> {
         // .samples() returns the number of samples *per channel*. so we need to multiply it by the number of channels
         if self.sample_idx >= (self.frame_resampled.samples() * self.channels() as usize) {
             // we're out of samples on our current frame! gotta decode a new frame
@@ -967,24 +991,24 @@ impl Iterator for AudioManager {
                     .streams()
                     .filter(is_audio)
                     .nth(new_track)
-                    .unwrap()
+                    .expect("new_track should point to an existing audio track but there aren't enough")
                     .index());
                 let old_track = self.stream_idx;
                 if new_track_idx != old_track {
                     self.stream_idx = new_track_idx;
 
                     if let Some(old_track) = old_track {
-                        set_stream_discard(&mut input.0.stream_mut(old_track).unwrap(), AVDISCARD_ALL);
+                        set_stream_discard(&mut input.0.stream_mut(old_track).expect("old_track should point to an existing stream but there aren't enough"), AVDISCARD_ALL);
                     }
                     if let Some(new_track_idx) = new_track_idx {
                         let mut new_track = input.0.stream_mut(new_track_idx).unwrap();
                         set_stream_discard(&mut new_track, AVDISCARD_NONE);
 
                         // create new decoder and resampler
-                        let decoder = new_audio_decoder(&new_track);
+                        let decoder = new_audio_decoder(&new_track)?;
                         self.resampler = Some(decoder.resampler(
                             Sample::F32(Type::Packed /* packed = interleaved (rodio only supports interleaved sample formats) */), decoder.channel_layout(), decoder.rate(),
-                        ).unwrap_or_else(|e| todo!("could not create resampler: {e}")));
+                        )?);
                         self.decoder = Some(decoder);
                     } else {
                         self.resampler = None;
@@ -993,11 +1017,11 @@ impl Iterator for AudioManager {
                 }
             }
             if self.stream_idx.is_none() {
-                return Some(0.);
+                return Ok(Some(0.));
             }
             loop {
                 let packet = match self.next_packet() {
-                    None => return Some(0.),
+                    None => return Ok(Some(0.)),
                     Some(v) => v,
                 };
 
@@ -1015,12 +1039,12 @@ impl Iterator for AudioManager {
             // resample our newly decoded frame
             self.resampler
                 .as_mut()
-                .unwrap()
+                .expect("since stream_idx is Some(_), resampler must also be Some(_)")
                 .run(&self.frame, &mut self.frame_resampled)
                 .unwrap();
             self.sample_idx = 0;
         } else if self.stream_idx.is_none() {
-            return Some(0.)
+            return Ok(Some(0.))
         }
         // .plane::<f32>(0) is nice because it returns the floats instead of bytes, but
         //      we can't use it because the array it returns bases its size off of the
@@ -1034,7 +1058,30 @@ impl Iterator for AudioManager {
             )
         }));
         self.sample_idx += 1;
-        Some(value * *self.volume.get())
+        Ok(Some(value * *self.volume.get()))
+    }
+}
+
+impl Iterator for AudioManager {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // this is not strictly required since the audio stream will most likely be
+        //  dropped by the video thread, stopping the audio thread. but just in case
+        //  we'll end our iterator if we have to close
+        if self.closer.should_close() {
+            return None;
+        }
+        if let Ok(()) = self.flush_requests.try_recv() {
+            if let Some(decoder) = &mut self.decoder {
+                decoder.flush();
+            }
+        }
+
+        let msg = self.msg.cheap_clone();
+        msg.handle_err("playing/decoding audio", |_| {
+            self.next_sample()
+        }).and_then(identity)
     }
 }
 

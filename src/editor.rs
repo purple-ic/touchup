@@ -58,6 +58,9 @@ impl Editor {
         current_texture: Option<&TextureId>,
     ) -> Option<EditorExit> {
         let mut exit = None;
+        if self.player.is_closed() {
+            exit = Some(ToSelectScreen)
+        }
 
         if Button::new(RichText::new("   <").size(20.))
             .frame(false)
