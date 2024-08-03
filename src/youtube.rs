@@ -14,10 +14,9 @@ use std::sync::{Arc, mpsc};
 use std::thread::Scope;
 
 use eframe::emath::{Align, Vec2};
-use egui::{
-    Button, Color32, Context, CursorIcon, Id, Image, ImageSource, include_image, Label, Layout,
-    OpenUrl, RichText, Sense, TextBuffer, TextEdit, TextStyle, Ui, Widget,
-};
+use eframe::epaint::text::TextWrapping;
+use egui::{Button, Color32, Context, CursorIcon, FontId, Id, Image, ImageSource, include_image, Label, Layout, OpenUrl, RichText, Sense, TextBuffer, TextEdit, TextFormat, TextStyle, TextWrapMode, Ui, Widget};
+use egui::text::{LayoutJob, LayoutSection};
 use egui::util::IdTypeMap;
 use futures::Stream;
 use futures_util::StreamExt;
@@ -39,7 +38,7 @@ use yup_oauth2::authenticator_delegate::InstalledFlowDelegate;
 use yup_oauth2::hyper_rustls::HttpsConnector;
 
 use crate::{AuthArc, header_map, https_client, infallible_unreachable, MessageManager, spawn_async, storage, Task};
-use crate::util::{AnyExt, Updatable};
+use crate::util::{AnyExt, CheapClone, Updatable};
 
 pub enum YtInfo {
     Continue {
@@ -65,6 +64,68 @@ impl YtScreen {
     pub fn draw(&mut self, ui: &mut Ui, tasks: &mut Vec<Task>) -> bool {
         let mut finalize = false;
         let mut cancelled = false;
+
+        // ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
+        //     {
+        //         let style = ui.style_mut();
+        //         style.spacing.item_spacing = Vec2::ZERO;
+        //         style.wrap_mode = Some(TextWrapMode::Wrap)
+        //     }
+
+
+        ui.scope(|ui| {
+            {
+                let style = ui.style_mut();
+                style.visuals.hyperlink_color = Color32::TRANSPARENT;
+            }
+
+            macro_rules! prefix {
+                () => {
+                    "By clicking 'Upload', you certify that the content you are uploading complies with the YouTube Terms of Service (including the YouTube Community Guidelines) at "
+                };
+            }
+
+            macro_rules! url {
+                () => {
+                    "https://www.youtube.com/t/terms"
+                };
+            }
+
+            macro_rules! suffix {
+                () => {
+                    ". Please be sure not to violate others' copyright or privacy rights."
+                };
+            }
+            const PREFIX: usize = prefix!().len();
+            const URL: &str = url!();
+            const SUFFIX: usize = suffix!().len();
+            let font = FontId::proportional(10.);
+
+            let text = LayoutJob {
+                text: concat!(prefix!(), url!(), suffix!()).into(),
+                sections: vec![
+                    LayoutSection {
+                        leading_space: 0.,
+                        byte_range: 0..(PREFIX),
+                        format: TextFormat::simple(font.cheap_clone(), Color32::GRAY),
+                    },
+                    LayoutSection {
+                        leading_space: 0.,
+                        byte_range: PREFIX..(PREFIX + URL.len()),
+                        format: TextFormat::simple(font.cheap_clone(), Color32::LIGHT_GRAY),
+                    },
+                    LayoutSection {
+                        leading_space: 0.,
+                        byte_range: (PREFIX + URL.len())..(PREFIX + URL.len() + SUFFIX),
+                        format: TextFormat::simple(font, Color32::GRAY),
+                    },
+                ],
+                wrap: TextWrapping::wrap_at_width(ui.available_width()),
+                ..Default::default()
+            };
+            ui.hyperlink_to(text, URL);
+            ui.add_space(4.);
+        });
 
         let mut visibility: YtVisibility = ui
             .ctx()
@@ -117,7 +178,7 @@ impl YtScreen {
         ui.add_space(8.);
         ui.with_layout(Layout::bottom_up(Align::Max), |ui| {
             ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
-                if Button::image_and_text(include_image!("../embedded/checkmark.svg"), "Finish")
+                if Button::image_and_text(include_image!("../embedded/checkmark.svg"), "Upload")
                     .ui(ui)
                     .on_hover_text(
                         "Finish editing the video details and upload the video once it's done",
