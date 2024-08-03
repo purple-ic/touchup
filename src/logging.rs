@@ -8,10 +8,12 @@ use std::fs::File;
 use std::io::Write;
 use std::sync::mpsc;
 use std::sync::mpsc::Sender;
+use std::time::{Instant, SystemTime};
 
 use backtrace::SymbolName;
 use log::{info, LevelFilter, Log, Metadata, Record};
 use simple_logger::SimpleLogger;
+use time::{OffsetDateTime, PrimitiveDateTime};
 
 use crate::storage;
 use crate::util::{CheapClone, FnDisplay};
@@ -66,13 +68,17 @@ fn test_backtraces() -> bool {
     matches!(backtrace.status(), BacktraceStatus::Captured)
 }
 
-fn full_backtrace_disabled() -> bool {
-    let var = env::var_os("TOUCHUP_SAVE_FULL_BACKTRACE");
-    var.as_deref() == Some(OsStr::new("true"))
+fn var_truthy(var: &str) -> bool {
+    const TRUTHY: &[&'static str] = &["true", "1", "on"];
+
+    env::var_os(var).is_some_and(|str| {
+        let str = str.as_os_str();
+        TRUTHY.iter().map(OsStr::new).any(|t| t == str)
+    })
 }
 
 pub fn init_logging() {
-    let enable_backtraces = test_backtraces() && !full_backtrace_disabled();
+    let file_logging = !var_truthy("TOUCHUP_NO_FILE_LOGGING");
 
     let base_level = if cfg!(debug_assertions) {
         LevelFilter::Trace
@@ -90,30 +96,56 @@ pub fn init_logging() {
         .with_module_level("yup_oauth2::authenticator", cap_level(LevelFilter::Info))
         .with_module_level("eframe::native", cap_level(LevelFilter::Debug));
 
-    log::set_max_level(inner_logger.max_level());
+    if file_logging {
+        log::set_max_level(inner_logger.max_level());
 
-    let mut path = storage();
-    path.push("log.txt");
-    let (send, recv) = mpsc::channel();
-    thread::spawn(move || {
-        let mut file = File::create(path).unwrap();
-        while let Ok(value) = recv.recv() {
-            let _ = writeln!(&mut file, "{value}");
-        }
-    });
-    let logger = Logger {
-        inner: inner_logger,
-        sender: send.cheap_clone(),
-    };
+        let mut path = storage();
+        path.push("log.txt");
+        let (send, recv) = mpsc::channel();
+        thread::spawn(move || {
+            let mut file = File::create(path).unwrap();
+            {
+                let now = OffsetDateTime::now_utc();
+                let day = now.day();
+                let month = now.month() as u8;
+                let year = now.year();
 
-    #[cfg(windows)]
-    simple_logger::set_up_windows_color_terminal();
+                let hour = now.hour();
+                let minute = now.minute();
 
-    log::set_boxed_logger(Box::new(logger)).expect("could not initialize logger");
+                let _ = writeln!(&mut file, "\t\t\t\t {year}/{month:0>2}/{day:0>2} {hour:0>2}:{minute:0>2}\tUTC");
+                let _ = writeln!(&mut file, "\t\t\t\t YYYY/MM/DD HH:MM\tUTC");
+                let _ = writeln!(&mut file);
+            }
 
+            while let Ok(value) = recv.recv() {
+                let _ = writeln!(&mut file, "{value}");
+            }
+        });
+        let logger = Logger {
+            inner: inner_logger,
+            sender: send.cheap_clone(),
+        };
+
+        #[cfg(windows)]
+        simple_logger::set_up_windows_color_terminal();
+
+        log::set_boxed_logger(Box::new(logger)).expect("could not initialize logger");
+
+        setup_file_panic_hook(send)
+    } else {
+        inner_logger.init().expect("could not initialize logger");
+    }
+
+    info!("Logger setup complete\n\t\t\tdo file logging: {file_logging}")
+}
+
+fn setup_file_panic_hook(send: Sender<String>) {
     // also capture panics into the file
     // todo: prefer panic::update_hook
     //      depends on https://github.com/rust-lang/rust/issues/92649
+    let custom_backtraces = test_backtraces() && !var_truthy("TOUCHUP_SAVE_FULL_BACKTRACE");
+    info!("save short backtraces: {custom_backtraces}");
 
     let old_hook = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
@@ -136,7 +168,7 @@ pub fn init_logging() {
             "PANIC thread '{thread}' at {location}:\n\t\t\t\t{msg}"
         );
 
-        if enable_backtraces {
+        if custom_backtraces {
             #[derive(Copy, Clone, Debug, PartialEq, Eq)]
             enum BacktraceStage {
                 Prefix,
@@ -202,8 +234,6 @@ pub fn init_logging() {
         let _ = send.send(str);
         old_hook(info)
     }));
-
-    info!("Logger setup complete\n\t\t\tsave short backtraces: {enable_backtraces}")
 }
 
 fn payload_str(payload: &dyn Any) -> &str {

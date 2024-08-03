@@ -11,6 +11,7 @@ description = "A program to quickly edit video clips"
 
 [dependencies]
 thiserror = "1.0.63"
+time = { version = "0.3.36", default-features = false, features = ["std"] }
 backtrace = "0.3.73"
 log = "0.4.22"
 simple_logger = { version = "5.0.0", features = ["threads"] }
