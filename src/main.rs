@@ -4,31 +4,32 @@ extern crate ffmpeg_next as ffmpeg;
 
 use std::backtrace::{Backtrace, BacktraceStatus};
 use std::borrow::Cow;
-use std::error::{Error, request_ref};
+use std::error::{request_ref, Error};
 use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
 use std::io::Stdout;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::{Arc, Barrier, mpsc, Mutex, MutexGuard, OnceLock, TryLockError, TryLockResult};
 use std::sync::mpsc::{SendError, TrySendError};
+use std::sync::{mpsc, Arc, Barrier, Mutex, MutexGuard, OnceLock, TryLockError, TryLockResult};
 use std::thread;
 use std::time::Duration;
 
-use eframe::{CreationContext, egui, egui_glow, Frame, glow, NativeOptions, storage_dir};
-use eframe::egui::{CentralPanel, Widget};
 use eframe::egui::load::TextureLoader;
-use eframe::egui_glow::{CallbackFn, check_for_gl_error};
+use eframe::egui::{CentralPanel, Widget};
+use eframe::egui_glow::{check_for_gl_error, CallbackFn};
 use eframe::epaint::PaintCallbackInfo;
-use eframe::glow::{HasContext, INVALID_ENUM, PixelUnpackData, TEXTURE_2D};
+use eframe::glow::{HasContext, PixelUnpackData, INVALID_ENUM, TEXTURE_2D};
+use eframe::{egui, egui_glow, glow, storage_dir, CreationContext, Frame, NativeOptions};
+use egui::epaint::mutex::RwLock;
+use egui::epaint::TextureManager;
+use egui::panel::TopBottomSide;
 use egui::{
     Align, Color32, Context, Id, ImageData, Label, Layout, ProgressBar, Rect, RichText, ScrollArea,
     TextureId, TopBottomPanel, ViewportBuilder, Visuals, WidgetText,
 };
-use egui::epaint::mutex::RwLock;
-use egui::epaint::TextureManager;
-use egui::panel::TopBottomSide;
 use log::{debug, error, info, LevelFilter};
+use player::tex::{attempt_tex_update, CurrentTex, PlayerTexture, TextureArc};
 use replace_with::replace_with;
 use rfd::{MessageButtons, MessageLevel};
 use serde::{Deserialize, Serialize};
@@ -37,15 +38,17 @@ use simple_logger::SimpleLogger;
 use crate::editor::{Editor, EditorExit};
 use crate::logging::init_logging;
 use crate::select::{SelectScreen, SelectScreenOut};
-use crate::util::{CheapClone, plural, report_err, Updatable};
+use crate::task::{draw_tasks, Task, TaskCommand};
+use crate::util::{plural, report_err, CheapClone, Updatable};
 
 mod editor;
 pub mod export;
+mod logging;
 pub mod player;
 mod select;
+pub mod task;
 mod util;
 mod youtube;
-mod logging;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -153,7 +156,7 @@ fn main() {
             Ok(Box::new(TouchUp::new(cc)))
         }),
     )
-        .expect("could not start eframe");
+    .expect("could not start eframe");
 
     #[cfg(feature = "async")]
     let _ = async_stop.send(());
@@ -182,85 +185,6 @@ impl Screen {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-pub enum TaskStage {
-    Export {
-        has_follow_up: bool,
-    },
-    #[cfg(feature = "youtube")]
-    YtAwaitingInfo,
-    #[cfg(feature = "youtube")]
-    YtUpload,
-}
-
-impl TaskStage {
-    pub fn name(&self) -> &'static str {
-        match self {
-            TaskStage::Export { .. } => "Exporting",
-            #[cfg(feature = "youtube")]
-            TaskStage::YtAwaitingInfo => "Please fill out the video's details",
-            #[cfg(feature = "youtube")]
-            TaskStage::YtUpload => "Uploading to YouTube",
-        }
-    }
-
-    pub fn is_final(&self) -> bool {
-        match self {
-            TaskStage::Export { has_follow_up } => !has_follow_up,
-            #[cfg(feature = "youtube")]
-            TaskStage::YtAwaitingInfo => false,
-            #[cfg(feature = "youtube")]
-            TaskStage::YtUpload => true,
-        }
-    }
-
-    pub fn custom_color(&self) -> Option<Color32> {
-        match self {
-            TaskStage::Export { .. } => None,
-            #[cfg(feature = "youtube")]
-            TaskStage::YtAwaitingInfo | TaskStage::YtUpload => Some(Color32::RED),
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug)]
-pub struct TaskStatus {
-    stage: TaskStage,
-    // - usually works as a normalized (0 to 1) scale of progress
-    // - when is +Infinity, represents a task that is currently being worked on but the progress can't be tracked
-    // - when is -Infinity, represents a task that can't be worked on and is waiting for user input
-    progress: f32,
-}
-
-impl TaskStatus {
-    pub fn is_finished(&self) -> bool {
-        self.stage.is_final() && self.progress >= 1. && self.progress.is_finite()
-    }
-}
-
-pub struct Task {
-    status: Updatable<TaskStatus>,
-    id: u32,
-    name: String,
-    remove_requested: bool,
-    #[cfg(feature = "async")]
-    async_stopper: Option<util::AsyncCanceler>,
-}
-
-#[derive(Debug, Clone)]
-pub enum TaskCommand {
-    Rename { id: u32, new_name: String },
-    Cancel { id: u32 },
-}
-
-pub struct PlayerTexture {
-    /// \[width, height] in pixels
-    pub size: [usize; 2],
-    /// in rgb24 bytes
-    pub bytes: Vec<u8>,
-    pub changed: bool,
-}
-
 struct TouchUp {
     screen: Screen,
     // the tasks should be sorted by their IDs
@@ -282,121 +206,7 @@ struct TouchUp {
     messages: mpsc::Receiver<String>,
 }
 
-struct CurrentTex {
-    id: TextureId,
-    native: glow::Texture,
-    size: [usize; 2],
-}
-
-pub type TextureArc = Arc<Mutex<PlayerTexture>>;
-
-fn set_player_texture_settings(gl: &glow::Context) {
-    unsafe {
-        gl.tex_parameter_i32(TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
-        gl.tex_parameter_i32(TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
-
-        gl.tex_parameter_i32(TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
-        gl.tex_parameter_i32(TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
-    }
-    check_for_gl_error!(gl, "trying to set tex params");
-}
-
 impl TouchUp {
-    fn init_texture(texture: glow::Texture, gl: &glow::Context, size: [usize; 2], data: &[u8]) {
-        unsafe {
-            gl.get_error();
-            gl.bind_texture(TEXTURE_2D, Some(texture));
-            set_player_texture_settings(gl);
-            // using RGB instead of SRGB makes the images.. way brighter?
-            //  kind of interesting that it makes them brighter instead of loosing quality
-            //  even though the source format is still the same
-            gl.tex_image_2d(
-                TEXTURE_2D,
-                0,
-                glow::SRGB8 as i32,
-                size[0].try_into().expect("could not convert size from usize to i32"),
-                size[1].try_into().expect("could not convert size from usize to i32"),
-                0,
-                glow::RGB,
-                glow::UNSIGNED_BYTE,
-                Some(data),
-            );
-            gl.bind_texture(TEXTURE_2D, None);
-        }
-    }
-
-    fn create_texture(size: [usize; 2], data: &[u8], frame: &mut Frame) -> CurrentTex {
-        let gl = frame.gl().unwrap();
-        let texture = unsafe { gl.create_texture() }.unwrap();
-        Self::init_texture(texture, gl, size, data);
-        check_for_gl_error!(gl, "trying to initialize texture");
-        let texture_id = frame.register_native_glow_texture(texture);
-        CurrentTex {
-            id: texture_id,
-            native: texture,
-            size,
-        }
-    }
-
-    fn react_to_tex_update(&mut self, ctx: &Context, frame: &mut Frame) {
-        let mut tex =
-            match self.texture.try_lock() {
-                Ok(v) => v,
-                Err(TryLockError::WouldBlock) => {
-                    return
-                }
-                Err(TryLockError::Poisoned(p)) => {
-                    debug!("clearing poison from player texture mutex");
-                    self.texture.clear_poison();
-                    p.into_inner()
-                }
-            };
-
-        // todo: this texture system leaves a frame or two where the last-played-frame of the previous video is visible
-            if tex.changed {
-                tex.changed = false;
-
-                if let Some(current_tex) = &mut self.current_tex {
-                    if current_tex.size != tex.size {
-                        debug!("player texture resizing");
-
-                        current_tex.size = tex.size;
-                        let gl = frame.gl().unwrap();
-                        // tell gl to reallocate the texture with a new size
-                        Self::init_texture(current_tex.native, gl, tex.size, &tex.bytes);
-                        check_for_gl_error!(gl, "trying to reinitialize texture for new size");
-                    } else {
-                        // println!("updating texture");
-                        let gl = frame.gl().unwrap();
-                        unsafe {
-                            gl.get_error();
-                            gl.bind_texture(TEXTURE_2D, Some(current_tex.native));
-                            set_player_texture_settings(gl);
-                            gl.tex_sub_image_2d(
-                                TEXTURE_2D,
-                                0,
-                                0,
-                                0,
-                                tex.size[0].try_into().expect("could not convert size from usize to i32"),
-                                tex.size[1].try_into().expect("could not convert size from usize to i32"),
-                                glow::RGB,
-                                glow::UNSIGNED_BYTE,
-                                PixelUnpackData::Slice(&tex.bytes),
-                            );
-                            gl.bind_texture(TEXTURE_2D, None);
-                            check_for_gl_error!(
-                                &gl,
-                                "while attempting to update the player texture"
-                            )
-                        }
-                    }
-                } else {
-                    info!("creating player texture");
-                    self.current_tex = Some(Self::create_texture(tex.size, &tex.bytes, frame));
-                };
-        }
-    }
-
     fn select_screen(ctx: &Context) -> SelectScreen {
         SelectScreen::new(ctx.clone())
     }
@@ -447,136 +257,9 @@ impl TouchUp {
     }
 }
 
-fn draw_tasks(
-    ctx: &egui::Context,
-    tasks: &mut Vec<Task>,
-    task_commands: &mut mpsc::Receiver<TaskCommand>,
-) {
-    // we also consume the task commands here
-    for cmd in task_commands.try_iter() {
-        // we prefer just searching for tasks from the start (over binary search)
-        //      as commands are almost always sent by the newest
-        //      task
-        macro_rules! find_task {
-            ($id:expr) => {
-                tasks.iter_mut().find(move |t| t.id == $id)
-            };
-        }
-
-        match cmd {
-            TaskCommand::Rename { id, new_name } => {
-                match find_task!(id) {
-                    None => continue,
-                    Some(t) => t.name = new_name,
-                };
-            }
-            TaskCommand::Cancel { id } => {
-                match find_task!(id) {
-                    None => continue,
-                    Some(t) => {
-                        // this is likely better than Vec::remove since
-                        //    once we're done with task commands, we
-                        //    immediately call Vec::retain_mut
-                        t.remove_requested = true;
-                    }
-                }
-            }
-        }
-    }
-
-    tasks.retain_mut(|task| {
-        let status = task.status.get();
-        !status.is_finished() && !task.remove_requested && !task.status.is_closed()
-    });
-
-    if !tasks.is_empty() {
-        ctx.request_repaint_after(Duration::from_secs_f32(0.5))
-    }
-
-    TopBottomPanel::new(TopBottomSide::Bottom, "taskPanel").show_animated(
-        ctx,
-        !tasks.is_empty(),
-        |ui| {
-            if tasks.is_empty() {
-                return;
-            }
-            ui.add_space(5.);
-
-            let task = &tasks[0];
-            let is_new_task = ctx.data_mut(|d| {
-                let old = d.get_temp_mut_or::<u32>(Id::new("taskLastShown"), task.id);
-                let is_new = *old != task.id;
-                *old = task.id;
-                is_new
-            });
-
-            // it's safe to get_now() since the retain_mut closure already called get()
-            let status = *task.status.get_now();
-
-            ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
-                if status.progress.is_finite() {
-                    ui.label(WidgetText::from(status.stage.name()).color(Color32::WHITE));
-                }
-                ui.label(&*task.name);
-            });
-            let progress = if status.progress.is_finite() {
-                ctx.animate_value_with_time(
-                    Id::new("taskProgress"),
-                    status.progress,
-                    if is_new_task { 0.0 } else { 0.5 },
-                )
-            } else if status.progress.is_sign_positive() {
-                // +Infinity
-                1.
-            } else {
-                // -Infinity
-                0.
-            };
-
-            let mut progress_bar = ProgressBar::new(progress)
-                .desired_width(ui.available_width())
-                .desired_height(20.)
-                .rounding(5.);
-            if status.progress.is_finite() {
-                progress_bar = progress_bar.show_percentage()
-            } else {
-                let mut text = RichText::new(status.stage.name());
-                if status.progress == f32::NEG_INFINITY {
-                    text = text
-                        .color(Color32::from_rgb(222, 53, 53))
-                        .strong()
-                        .size(16.)
-                }
-                progress_bar = progress_bar.text(text);
-            }
-            if status.progress == f32::NEG_INFINITY {
-                progress_bar = progress_bar.fill(Color32::TRANSPARENT);
-            } else if let Some(color) = status.stage.custom_color() {
-                progress_bar = progress_bar.fill(color);
-            }
-            progress_bar.ui(ui);
-            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-                Label::new(format!(
-                    "{n} task{s}",
-                    n = tasks.len(),
-                    s = plural(tasks.len()),
-                ))
-                    .selectable(false)
-                    .ui(ui);
-
-                ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
-                    if ui.button("Cancel").clicked() {
-                        tasks[0].remove_requested = true;
-                    }
-                })
-            });
-        },
-    );
-}
-
 impl eframe::App for TouchUp {
     fn update(&mut self, ctx: &Context, frame: &mut Frame) {
-        self.react_to_tex_update(ctx, frame);
+        attempt_tex_update(&mut self.current_tex, &self.texture, ctx, frame);
         draw_tasks(ctx, &mut self.tasks.1, &mut self.task_commands);
 
         CentralPanel::default().show(ctx, |ui| {
@@ -717,8 +400,8 @@ impl MessageManager {
         tokio::task::spawn_blocking(move || {
             self2.show_blocking(msg);
         })
-            .await
-            .unwrap();
+        .await
+        .unwrap();
     }
 
     fn _handle_err<E: Error>(&self, stage: &str, err: E) {
@@ -751,7 +434,7 @@ impl MessageManager {
     pub async fn handle_err_async<E: Error + Send + 'static, R>(
         &self,
         stage: impl AsRef<str> + Send + 'static,
-        future: impl Future<Output=Result<R, E>>,
+        future: impl Future<Output = Result<R, E>>,
     ) -> Option<R> {
         match future.await {
             Ok(v) => Some(v),
@@ -761,23 +444,18 @@ impl MessageManager {
                     let stage = stage;
                     self2._handle_err(stage.as_ref(), err);
                 })
-                    .await
-                    .expect("_handle_err should not panic");
+                .await
+                .expect("_handle_err should not panic");
                 None
             }
         }
-        // let value = future.await;
-        // let self2 = self.cheap_clone();
-        // spawn_blocking(move || {
-        //     self2._handle_err(stage, value)
-        // }).await.expect("_handle_err should not panic")
     }
 
     #[cfg(feature = "async")]
     pub fn handle_err_spawn<E: Error + Send + 'static, R: Send + 'static>(
         &self,
         stage: impl AsRef<str> + Send + 'static,
-        future: impl Future<Output=Result<R, E>> + Send + 'static,
+        future: impl Future<Output = Result<R, E>> + Send + 'static,
     ) -> tokio::task::JoinHandle<Option<R>> {
         let msg = self.cheap_clone();
         spawn_async(async move { msg.handle_err_async(stage, future).await })

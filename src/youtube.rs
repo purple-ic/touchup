@@ -1,6 +1,5 @@
 #![cfg(feature = "youtube")]
 
-use std::{fs, io, iter, mem};
 use std::backtrace::Backtrace;
 use std::borrow::Cow;
 use std::error::Error;
@@ -10,23 +9,24 @@ use std::future::Future;
 use std::io::{Cursor, ErrorKind, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::{Arc, mpsc};
+use std::sync::{mpsc, Arc};
 use std::thread::Scope;
+use std::{fs, io, iter, mem};
 
 use eframe::emath::{Align, Vec2};
 use eframe::epaint::text::TextWrapping;
+use egui::text::{LayoutJob, LayoutSection};
+use egui::util::IdTypeMap;
 use egui::{
-    Button, Color32, Context, CursorIcon, FontId, Id, Image, ImageSource, include_image, Label,
+    include_image, Button, Color32, Context, CursorIcon, FontId, Id, Image, ImageSource, Label,
     Layout, OpenUrl, RichText, Sense, TextBuffer, TextEdit, TextFormat, TextStyle, TextWrapMode,
     Ui, Widget,
 };
-use egui::text::{LayoutJob, LayoutSection};
-use egui::util::IdTypeMap;
 use futures::Stream;
 use futures_util::StreamExt;
 use log::{debug, error};
-use reqwest::{Body, multipart};
 use reqwest::header::{HeaderMap, HeaderValue};
+use reqwest::{multipart, Body};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use thiserror::Error;
@@ -36,16 +36,16 @@ use tokio::task::spawn_blocking;
 use tokio_util::bytes::{BufMut, BytesMut};
 use tokio_util::codec::{BytesCodec, FramedRead};
 use tokio_util::io::ReaderStream;
-use yup_oauth2::{ConsoleApplicationSecret, InstalledFlowAuthenticator, InstalledFlowReturnMethod};
 use yup_oauth2::authenticator::{Authenticator, DefaultHyperClient, HyperClientBuilder};
 use yup_oauth2::authenticator_delegate::InstalledFlowDelegate;
 use yup_oauth2::hyper_rustls::HttpsConnector;
+use yup_oauth2::{ConsoleApplicationSecret, InstalledFlowAuthenticator, InstalledFlowReturnMethod};
 
-use crate::{
-    AuthArc, header_map, https_client, infallible_unreachable, MessageManager, spawn_async,
-    storage, Task,
-};
+use crate::task::Task;
 use crate::util::{AnyExt, CheapClone, Updatable};
+use crate::{
+    header_map, https_client, infallible_unreachable, spawn_async, storage, AuthArc, MessageManager,
+};
 
 pub enum YtInfo {
     Continue {
@@ -102,10 +102,10 @@ impl YtScreen {
                         Image::new(vis.icon()).fit_to_exact_size(Vec2::splat(menu_height)),
                         vis.display_str(),
                     )
-                        .selected(*vis == visibility)
-                        .ui(ui)
-                        .on_hover_text(vis.description())
-                        .clicked()
+                    .selected(*vis == visibility)
+                    .ui(ui)
+                    .on_hover_text(vis.description())
+                    .clicked()
                     {
                         visibility = *vis;
                         ui.ctx()
@@ -114,9 +114,9 @@ impl YtScreen {
                     }
                 }
             })
-                .response
-                .rect
-                .height();
+            .response
+            .rect
+            .height();
             // todo: maybe show the visibility icon even when not in the dropdown menu?
             // Image::new(visibility.icon())
             //     .fit_to_exact_size(Vec2::splat(real_height))
@@ -354,7 +354,7 @@ pub async fn yt_auth(
             &'a self,
             url: &'a str,
             need_code: bool,
-        ) -> Pin<Box<dyn Future<Output=Result<String, String>> + Send + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
             assert!(!need_code);
 
             Box::pin(async move {
@@ -373,16 +373,16 @@ pub async fn yt_auth(
         secret.installed.unwrap(),
         InstalledFlowReturnMethod::HTTPRedirect,
     )
-        .maybe_apply(keep_login, |builder| {
-            builder.persist_tokens_to_disk(yt_token_file())
-        })
-        .flow_delegate(Box::new(CodePresenter {
-            ctx: ctx2,
-            send_url,
-        }))
-        .build()
-        .await
-        .map_err(YtAuthErr::AuthErr)?;
+    .maybe_apply(keep_login, |builder| {
+        builder.persist_tokens_to_disk(yt_token_file())
+    })
+    .flow_delegate(Box::new(CodePresenter {
+        ctx: ctx2,
+        send_url,
+    }))
+    .build()
+    .await
+    .map_err(YtAuthErr::AuthErr)?;
 
     // try to cache the token for the upload scope
     let _ = auth.token(&[UPLOAD_SCOPE]).await;
@@ -493,10 +493,10 @@ impl YtAuthScreen {
                     if Label::new(
                         RichText::new("Click to copy the login URL").color(Color32::WHITE),
                     )
-                        .sense(Sense::hover())
-                        .ui(ui)
-                        .on_hover_cursor(CursorIcon::PointingHand)
-                        .clicked()
+                    .sense(Sense::hover())
+                    .ui(ui)
+                    .on_hover_cursor(CursorIcon::PointingHand)
+                    .clicked()
                     {
                         ui.output_mut(|o| o.copied_text = url.to_string())
                     }

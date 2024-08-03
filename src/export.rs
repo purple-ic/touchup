@@ -21,7 +21,8 @@ use log::info;
 use thiserror::Error;
 use tokio::task::spawn_blocking;
 
-use crate::{AuthArc, MessageManager, TaskCommand, TaskStage, TaskStatus};
+use crate::{AuthArc, MessageManager};
+use crate::task::{TaskCommand, TaskStage, TaskStatus};
 use crate::export::ExportError::NoVideoStream;
 use crate::player::r#impl::sec2ts;
 #[cfg(feature = "async")]

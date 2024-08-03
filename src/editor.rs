@@ -11,7 +11,8 @@ use eframe::Frame;
 use egui::{Align, Align2, Button, Color32, Context, CursorIcon, FontId, Image, include_image, Layout, RichText, Sense, Ui, Vec2, Widget, WidgetText};
 use egui::load::ImageLoader;
 
-use crate::{AuthArc, MessageManager, Task, TaskCommand, TaskStage, TaskStatus, TextureArc};
+use crate::{AuthArc, MessageManager, TextureArc};
+use crate::task::{Task, TaskCommand, TaskStage, TaskStatus};
 use crate::editor::EditorExit::ToSelectScreen;
 use crate::export::ExportFollowUp;
 use crate::player::{PlayerUI, write_duration};

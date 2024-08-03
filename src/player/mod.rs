@@ -5,23 +5,26 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Sender, SyncSender};
 use std::time::Duration;
 
-use eframe::{egui, Frame};
+use eframe::egui::load::SizedTexture;
 use eframe::egui::{
-    Align, Align2, Area, Color32, Context, FontSelection, Id, Image, ImageSource, include_image,
+    include_image, Align, Align2, Area, Color32, Context, FontSelection, Id, Image, ImageSource,
     Key, Label, Layout, Rect, Sense, Slider, Ui, Vec2, Widget, WidgetText,
 };
-use eframe::egui::load::SizedTexture;
-use egui::{CursorIcon, NumExt, TextureId};
+use eframe::{egui, Frame};
 use egui::load::Bytes;
+use egui::{CursorIcon, TextureId};
 use ffmpeg::format;
 use rfd::{MessageButtons, MessageDialog, MessageLevel};
+use tex::TextureArc;
 
-use crate::{AuthArc, MessageManager, TaskCommand, TaskStatus, TextureArc};
 use crate::export::ExportFollowUp;
 use crate::player::r#impl::Player;
-use crate::util::{BoolExt, time_diff};
+use crate::task::{TaskCommand, TaskStatus};
+use crate::util::{time_diff, BoolExt};
+use crate::{AuthArc, MessageManager};
 
 pub mod r#impl;
+pub mod tex;
 
 pub struct PlayerUI {
     player: Player,
@@ -46,13 +49,20 @@ impl PlayerUI {
         auth: AuthArc,
         follow_up: ExportFollowUp,
         task_cmds: Sender<TaskCommand>,
-        #[cfg(feature = "async")]
-        cancel_recv: Option<tokio::sync::oneshot::Receiver<()>>,
+        #[cfg(feature = "async")] cancel_recv: Option<tokio::sync::oneshot::Receiver<()>>,
     ) {
-        self.player
-            .begin_export(trim, audio_track, status, path, id, auth, follow_up, task_cmds, #[cfg(
-                feature = "async"
-            )] cancel_recv)
+        self.player.begin_export(
+            trim,
+            audio_track,
+            status,
+            path,
+            id,
+            auth,
+            follow_up,
+            task_cmds,
+            #[cfg(feature = "async")]
+            cancel_recv,
+        )
     }
 
     pub fn seek_to(&mut self, to: Duration) {
@@ -99,7 +109,7 @@ impl PlayerUI {
         msg: MessageManager,
         path: &(impl AsRef<Path> + ?Sized),
         frame: &mut Frame,
-        texture: TextureArc
+        texture: TextureArc,
     ) -> Option<Self> {
         let input = match format::input(path) {
             Ok(i) => i,
@@ -134,7 +144,7 @@ impl PlayerUI {
                 input,
                 path.as_ref().into(),
                 if enable_sound { volume } else { 0. },
-                texture
+                texture,
             )?,
             last_preview: None,
             force_controls: false,
@@ -143,7 +153,12 @@ impl PlayerUI {
         })
     }
 
-    pub fn draw(&mut self, trim: &RangeInclusive<f32>, ui: &mut Ui, current_texture: Option<&TextureId>) {
+    pub fn draw(
+        &mut self,
+        trim: &RangeInclusive<f32>,
+        ui: &mut Ui,
+        current_texture: Option<&TextureId>,
+    ) {
         let ctx = ui.ctx().clone() /* ctx is rc'd */;
 
         if !self.player.is_paused() {
@@ -152,14 +167,16 @@ impl PlayerUI {
 
         let [w, h] = self.player.resolution();
 
-        let source =
-            match current_texture {
-                None => ImageSource::Bytes {
-                    uri: Cow::Borrowed("bytes://empty"),
-                    bytes: Bytes::Static(&[]),
-                },
-                Some(current_texture) => ImageSource::Texture(SizedTexture::new(*current_texture, Vec2::new(w as f32, h as f32))),
-            };
+        let source = match current_texture {
+            None => ImageSource::Bytes {
+                uri: Cow::Borrowed("bytes://empty"),
+                bytes: Bytes::Static(&[]),
+            },
+            Some(current_texture) => ImageSource::Texture(SizedTexture::new(
+                *current_texture,
+                Vec2::new(w as f32, h as f32),
+            )),
+        };
         let video_response = ui.add(Image::new(source).fit_to_exact_size(ui.available_size()));
         let video_rect = video_response.rect;
 
@@ -227,15 +244,15 @@ impl PlayerUI {
         } else {
             Image::new(include_image!("../../embedded/pause.svg"))
         }
-            .sense(Sense::click())
-            .tint(Color32::WHITE.gamma_multiply(control_opacity))
-            .ui(ui)
-            .on_hover_cursor(CursorIcon::PointingHand)
-            .on_hover_text(if self.player.is_paused() {
-                "Resume"
-            } else {
-                "Pause"
-            });
+        .sense(Sense::click())
+        .tint(Color32::WHITE.gamma_multiply(control_opacity))
+        .ui(ui)
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text(if self.player.is_paused() {
+            "Resume"
+        } else {
+            "Pause"
+        });
 
         let play_size = play_pause_response.rect.size();
 
@@ -254,11 +271,13 @@ impl PlayerUI {
         let video_pos = real_vid_pos.saturating_sub(Duration::from_secs_f32(*trim.start()));
         let duration = Duration::from_secs_f32(trim.end() - trim.start());
 
-        write_duration(video_pos, &mut str).expect("duration write should not fail when writing to String");
+        write_duration(video_pos, &mut str)
+            .expect("duration write should not fail when writing to String");
         Label::new(str).selectable(false).ui(ui);
 
         let mut str = String::new();
-        write_duration(duration, &mut str).expect("duration write should not fail when writing to String");
+        write_duration(duration, &mut str)
+            .expect("duration write should not fail when writing to String");
         let dur_text = WidgetText::from(str);
         let dur_galley =
             dur_text.into_galley(ui, None, ui.available_width(), FontSelection::Default);
@@ -317,10 +336,10 @@ impl PlayerUI {
                 } else {
                     include_image!("../../embedded/volume-mute.svg")
                 })
-                    .sense(Sense::click())
-                    .tint(Color32::WHITE.gamma_multiply(control_opacity))
-                    .ui(ui)
-                    .on_hover_cursor(CursorIcon::PointingHand);
+                .sense(Sense::click())
+                .tint(Color32::WHITE.gamma_multiply(control_opacity))
+                .ui(ui)
+                .on_hover_cursor(CursorIcon::PointingHand);
                 if volume.clicked() {
                     self.enable_sound.toggle();
                     ui.data_mut(|d| d.insert_persisted(Id::new("enableSound"), self.enable_sound));

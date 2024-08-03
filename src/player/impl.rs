@@ -35,7 +35,8 @@ use thiserror::Error;
 
 use VideoTime::PausedAt;
 
-use crate::{AuthArc, MessageManager, PlayerTexture, TaskCommand, TaskStatus, TextureArc};
+use crate::{AuthArc, MessageManager, PlayerTexture, TextureArc};
+use crate::task::{ TaskCommand, TaskStatus};
 use crate::export::{export, ExportFollowUp};
 use crate::player::r#impl::PlayerCommand::UpdatePreview;
 use crate::player::r#impl::VideoTime::Anchored;
