@@ -20,7 +20,7 @@ use ffmpeg::packet::Mut;
 use ffmpeg::sys::av_rescale_q;
 use ffmpeg::Rational;
 use ffmpeg_next::codec::decoder::video::Video as VideoDecoder;
-use log::error;
+use log::{error, trace};
 
 #[cfg(feature = "async")]
 pub use async_util::*;
@@ -245,6 +245,8 @@ pub fn precise_seek(
     stream_idx: usize,
     target_ts: i64,
 ) -> Result<(), ffmpeg_next::Error> {
+    trace!("performing precise seek to {target_ts} in stream {stream_idx}");
+
     unsafe {
         let result = av_seek_frame(
             input.as_mut_ptr(),
@@ -530,9 +532,9 @@ pub fn report_err(action: &str, err: &impl Error) {
     let backtrace =
         request_ref::<Backtrace>(err).filter(|b| matches!(b.status(), BacktraceStatus::Captured));
     if let Some(backtrace) = backtrace {
-        error!("error while `{action}`: {err}\n{}", backtrace)
+        error!("error while `{action}`: {err}\n\t{err:?}\n{}", backtrace)
     } else {
-        error!("(no backtrace) error while `{action}`: {err}")
+        error!("(no backtrace) error while `{action}`: {err}\n\t{err:?}")
     }
 }
 

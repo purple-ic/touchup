@@ -1,9 +1,9 @@
-use std::mem;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::Duration;
+use std::{fs, mem};
 
 use eframe::emath::{Pos2, Rect};
 use eframe::epaint::TextureId;
@@ -17,7 +17,7 @@ use crate::editor::EditorExit::ToSelectScreen;
 use crate::export::ExportFollowUp;
 use crate::player::{write_duration, PlayerUI};
 use crate::task::{Task, TaskCommand, TaskStage, TaskStatus};
-use crate::util::Updatable;
+use crate::util::{report_err, Updatable};
 use crate::{AuthArc, MessageManager, TextureArc};
 
 pub struct Editor {
@@ -169,7 +169,10 @@ impl Editor {
                 },
                 2,
             );
-            let path = mem::take(path);
+            let path = fs::canonicalize(&path).unwrap_or_else(|e| {
+                report_err("canonicalizing input path", &e);
+                mem::take(path)
+            });
             let name: String = String::from(path.file_stem().unwrap_or_default().to_string_lossy());
             #[cfg(feature = "async")]
             let (cancel_send, cancel_recv) = if follow_up.needs_async_stopper() {

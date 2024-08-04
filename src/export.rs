@@ -15,13 +15,13 @@ use ffmpeg::format::context::{Input, Output};
 use ffmpeg::format::output;
 use ffmpeg::frame::{Audio as AudioFrame, Video as VideoFrame};
 use ffmpeg::{codec, decoder, encoder, format, picture, Frame, Packet};
-use log::info;
+use log::{debug, info};
 use thiserror::Error;
 use tokio::task::spawn_blocking;
 
 use crate::player::r#impl::sec2ts;
 use crate::task::{TaskCommand, TaskStage, TaskStatus};
-use crate::util::{lock_ignore_poison, precise_seek, result2flow, RationalExt};
+use crate::util::{lock_ignore_poison, precise_seek, report_err, result2flow, RationalExt};
 use crate::{AuthArc, MessageManager};
 
 #[derive(Default)]
@@ -137,6 +137,8 @@ impl ExportFollowUp {
 
 #[derive(Error, Debug)]
 pub enum ExportError {
+    #[error("Input and output paths cannot be the same:\n\t{}", .0.display())]
+    SameOutput(PathBuf),
     #[error("The provided video file has no video stream")]
     NoVideoStream,
     #[error("Received an error from FFmpeg: {0}")]
@@ -149,6 +151,8 @@ pub enum ExportError {
     TrashErr { path: PathBuf, err: trash::Error },
     #[error("Could not permanently delete {}: {err}", .path.display())]
     DeleteErr { path: PathBuf, err: io::Error },
+    #[error("IO error: {0}")]
+    GenericIo(#[from] io::Error, Backtrace),
     #[cfg(feature = "youtube")]
     #[error("Could not open output file {}: {err}", .path.display())]
     OpenOutputFile { path: PathBuf, err: io::Error },
@@ -166,7 +170,8 @@ fn audio_transcoder(
     output: &mut Output,
     in_stream_idx: usize,
     (start, end): (f32, f32),
-) -> Result<Transcoder<AudioFrame, impl FnMut(&mut AudioFrame)>, ExportError> {
+) -> Result<Transcoder<false, AudioFrame, impl FnMut(&mut AudioFrame)>, ExportError> {
+    debug!("creating audio transcoder (input stream = index {in_stream_idx})");
     let global_header = output
         .format()
         .flags()
@@ -181,6 +186,7 @@ fn audio_transcoder(
         .decoder()
         .audio()?;
     let codec_id = decoder.codec().expect("decoder should have a codec").id();
+    debug!("audio codec: {}", codec_id.name());
     let codec = encoder::find(codec_id).ok_or(ExportError::NoEncoder { id: codec_id })?;
     let mut out_stream = output.add_stream(codec)?;
     out_stream.set_parameters(in_stream.parameters());
@@ -220,7 +226,9 @@ fn video_transcoder(
     output: &mut Output,
     in_stream_idx: usize,
     (start, end): (f32, f32),
-) -> Result<Transcoder<VideoFrame, impl FnMut(&mut VideoFrame)>, ExportError> {
+) -> Result<Transcoder<true, VideoFrame, impl FnMut(&mut VideoFrame)>, ExportError> {
+    debug!("creating video transcoder (input stream = index {in_stream_idx})");
+
     let global_header = output
         .format()
         .flags()
@@ -236,6 +244,7 @@ fn video_transcoder(
         .video()?;
 
     let codec_id = decoder.codec().expect("decoder should have a codec").id();
+    debug!("video codec: {}", codec_id.name());
     let codec = encoder::find(codec_id).ok_or(ExportError::NoEncoder { id: codec_id })?;
     let mut out_stream = output.add_stream(codec)?;
     out_stream.set_parameters(in_stream.parameters());
@@ -275,7 +284,7 @@ fn video_transcoder(
     })
 }
 
-struct Transcoder<Fr: Deref<Target = Frame> + DerefMut, Fn: FnMut(&mut Fr)> {
+struct Transcoder<const IS_VIDEO: bool, Fr: Deref<Target = Frame> + DerefMut, Fn: FnMut(&mut Fr)> {
     start: i64,
     end: i64,
     decoder: decoder::opened::Opened,
@@ -286,7 +295,9 @@ struct Transcoder<Fr: Deref<Target = Frame> + DerefMut, Fn: FnMut(&mut Fr)> {
     apply_frame_extra: Fn,
 }
 
-impl<Fr: Deref<Target = Frame> + DerefMut, Fn: FnMut(&mut Fr)> Transcoder<Fr, Fn> {
+impl<const IS_VIDEO: bool, Fr: Deref<Target = Frame> + DerefMut, Fn: FnMut(&mut Fr)>
+    Transcoder<IS_VIDEO, Fr, Fn>
+{
     fn send_packets(
         &mut self,
         packet: &mut Packet,
@@ -324,6 +335,10 @@ impl<Fr: Deref<Target = Frame> + DerefMut, Fn: FnMut(&mut Fr)> Transcoder<Fr, Fn
         packet: &mut Packet,
         output: &mut Output,
     ) -> Result<(), ffmpeg_next::Error> {
+        debug!(
+            "finishing {} stream",
+            if IS_VIDEO { "video" } else { "audio" }
+        );
         self.decoder.send_eof()?;
         if let Break(Some(err)) = self.process_frames(packet, output) {
             return Err(err);
@@ -368,12 +383,28 @@ pub fn export(
     let file_name = input_path
         .file_name()
         .expect("user should not be able to provide input path with no file name");
-    let mut out_path = PathBuf::from(ctx.data_mut(|d| {
+    let out_path = ctx.data_mut(|d| {
         d.get_persisted::<String>(Id::new("outPath"))
             .expect("outPath should be already set once we get to exporting")
-    }));
+    });
     fs::create_dir_all(&out_path).map_err(ExportError::CreateOutDir)?;
+    let mut out_path = fs::canonicalize(&out_path).unwrap_or_else(|e| {
+        report_err("while canonicalizing output path", &e);
+        PathBuf::from(out_path)
+    });
+
     out_path.push(file_name);
+
+    if input_path == out_path {
+        return Err(ExportError::SameOutput(out_path));
+    }
+    debug!(
+        "beginning file export:
+            input:  {i}
+            output: {o}",
+        i = input_path.display(),
+        o = out_path.display()
+    );
 
     let mut output = output(&out_path)?;
 
@@ -467,6 +498,8 @@ pub fn export(
             progress: 1.,
         })
         .unwrap();
+
+    debug!("file export finished");
 
     follow_up.run(
         &ctx,
