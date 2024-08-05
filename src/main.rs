@@ -345,13 +345,14 @@ pub struct MessageManager {
     ctx: Context,
 }
 
+assert_cheap_clone!(Context, mpsc::SyncSender<String>);
+impl CheapClone for MessageManager {}
+
 #[derive(Clone, Debug)]
 pub struct MessageBufFull {
     #[allow(dead_code)]
     attempted_message: String,
 }
-
-impl CheapClone for MessageManager {}
 
 impl MessageManager {
     pub fn show_blocking(&self, message: impl Into<String>) {

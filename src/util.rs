@@ -494,6 +494,18 @@ pub trait CheapClone: Clone {
     }
 }
 
+#[macro_export]
+macro_rules! assert_cheap_clone {
+    ($($value:ty),* $(,)?) => {
+        $(
+            #[allow(path_statements)]
+            const _: () = {
+                <$value as $crate::util::CheapClone>::cheap_clone;
+            };
+        )*
+    };
+}
+
 macro_rules! cheap_clone_impl {
     ($(
         $(< $($param:ident),* >)?
