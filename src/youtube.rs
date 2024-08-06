@@ -308,7 +308,6 @@ pub async fn yt_auth(
         .header("User-Agent", "TouchUp")
         .header("X-GitHub-Api-Version", "2022-11-28")
         .header("Accept", "application/vnd.github.raw+json")
-        .bearer_auth(env!("GH_TOKEN_TODO_REMOVE"))
         .send()
         .await?
         .json::<YtVInfo>()
