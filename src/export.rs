@@ -17,7 +17,6 @@ use ffmpeg::frame::{Audio as AudioFrame, Video as VideoFrame};
 use ffmpeg::{codec, decoder, encoder, format, picture, Frame, Packet};
 use log::{debug, info};
 use thiserror::Error;
-use tokio::task::spawn_blocking;
 
 use crate::player::r#impl::sec2ts;
 use crate::task::{TaskCommand, TaskStage, TaskStatus};
@@ -116,7 +115,7 @@ impl ExportFollowUp {
                             }).unwrap();
                             info!("finished uploading");
 
-                            spawn_blocking(move || {
+                            tokio::task::spawn_blocking(move || {
                                 if should_delete {
                                     maybe_trash(use_trash, &output_file)?
                                 }
