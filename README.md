@@ -1,5 +1,10 @@
 # TouchUp
 
+> [!WARNING]
+> This README is written for the moment the YouTube-related features are functional.
+> 
+> Currently, YouTube support doesn't actually work.
+
 TouchUp is a little program for giving your clips some editing and then quickly
 shipping them off to YouTube or exporting them to disk.
 
@@ -21,6 +26,9 @@ whatever you want.
 - Upload the edited clip to YouTube quickly
 
 ## Installation
+
+> [!NOTE]
+> No official distributions are currently available. They should be up once YouTube is supported.
 
 TouchUp doesn't come with an installer. We simply distribute the executable and necessary files
 in a zip file. Those zip files can be found [here](https://github.com/purple-ic/touchup/releases/).
