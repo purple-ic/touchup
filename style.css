@@ -1,0 +1,12 @@
+body {
+  padding-top: 2%;
+  text-align: center;
+  font-family: Arial, sans-serif;
+  background-color: rgb(66, 66, 66);
+  color: white;
+}
+
+a:link,
+a:visited {
+  color: aqua;
+}
