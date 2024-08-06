@@ -4,7 +4,7 @@ TouchUp is a little program for giving your clips some editing and then quickly
 shipping them off to YouTube or exporting them to disk.
 
 This app does not by itself take clips. That part is left up to different programs:
-[OBS](https://obsproject.com/)'s replay feature is the indented way but you can do
+[OBS](https://obsproject.com/)'s replay feature is the intended way but you can do
 whatever you want.
 
 ## TODO: pics
@@ -13,10 +13,10 @@ whatever you want.
 
 - Trim the video's start and end point
 - Change the video's audio track (only one can be exported), or mute audio entirely
-    - This is useful if you have multiple audio tracks (e.g. one for game+mic, and one for game+mic+discord)
-      for choosing just one. Most ways to share your clips (YouTube, Discord, etc...) won't let the user
-      change the audio tracks so you most likely want to do that yourself.
-    - TouchUp currently doesn't support mixing together multiple tracks at a time.
+  - This is useful if you have multiple audio tracks (e.g. one for game+mic, and one for game+mic+discord)
+    for choosing just one. Most ways to share your clips (YouTube, Discord, etc...) won't let the user
+    change the audio tracks so you most likely want to do that yourself.
+  - TouchUp currently doesn't support mixing together multiple tracks at a time.
 - Export the edited clips to a configured folder
 - Upload the edited clip to YouTube quickly
 
