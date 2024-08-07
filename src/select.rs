@@ -100,6 +100,19 @@ impl SelectScreen {
             ui.output_mut(|o| o.open_url = Some(OpenUrl::new_tab("https://github.com/purple-ic/touchup")))
         }
 
+        if Label::new("Click to view our privacy policy")
+            .sense(Sense::click())
+            .ui(ui)
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .clicked()
+        {
+            ui.output_mut(|o| {
+                o.open_url = Some(OpenUrl::new_tab(
+                    "https://purple-ic.github.io/touchup/privacyPolicy",
+                ))
+            })
+        }
+
         ui.add_space(24.);
 
         ui.heading("Settings");
