@@ -3,7 +3,7 @@ use crate::util::{self, plural};
 use eframe::epaint::Color32;
 use egui::panel::TopBottomSide;
 use egui::{Align, Id, Label, Layout, ProgressBar, RichText, TopBottomPanel, Widget, WidgetText};
-use puffin::{profile_function, profile_scope, profile_scope_custom};
+use puffin::{profile_scope, profile_scope_custom};
 use std::sync::mpsc;
 use std::time::Duration;
 

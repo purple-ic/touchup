@@ -14,12 +14,11 @@ use eframe::egui::CentralPanel;
 use eframe::{egui, storage_dir, CreationContext, Frame, NativeOptions};
 use egui::epaint::mutex::RwLock;
 use egui::{
-    Color32, Context, Id, KeyboardShortcut, Modifiers, ScrollArea, ViewportBuilder, ViewportId,
-    Visuals,
+    Color32, Context, KeyboardShortcut, Modifiers, ScrollArea, ViewportBuilder, ViewportId, Visuals,
 };
 use log::info;
 use player::tex::{attempt_tex_update, CurrentTex, PlayerTexture, TextureArc};
-use puffin::{profile_function, profile_scope, profile_scope_custom};
+use puffin::{profile_function, profile_scope_custom};
 use replace_with::replace_with;
 use rfd::{MessageButtons, MessageLevel};
 
