@@ -15,6 +15,8 @@ use SelectScreenOut::*;
 use crate::util::report_err;
 use crate::{storage, AuthArc};
 
+const PRIVACY_POLICY_VERSION: &'static str = "1";
+
 pub struct SelectScreen {
     // dir_reader: OwnedThreads,
     // dirs: Vec<PathBuf>,
@@ -110,9 +112,9 @@ impl SelectScreen {
             .clicked()
         {
             ui.output_mut(|o| {
-                o.open_url = Some(OpenUrl::new_tab(
-                    "https://purple-ic.github.io/touchup/privacyPolicy",
-                ))
+                o.open_url = Some(OpenUrl::new_tab(format!(
+                    "https://purple-ic.github.io/touchup/privacyPolicy#v{PRIVACY_POLICY_VERSION}"
+                )))
             })
         }
 
