@@ -2,7 +2,7 @@
 
 > [!WARNING]
 > This README is written for the moment the YouTube-related features are functional.
-> 
+>
 > Currently, YouTube support doesn't actually work.
 
 TouchUp is a little program for giving your clips some editing and then quickly
@@ -91,6 +91,10 @@ Default features (such as `youtube`) can be disabled by also passing `--no-defau
   may want to disable this to speed up compilation time or to not depend on the `async` feature (see below)
 - `async` (required for `youtube`): spins up an async runtime. This may be somewhat taxing
   on your device and might decrease compilation time, but it'll most likely be fine.
+
+## Privacy policy
+
+Our privacy policy is available [here](https://purple-ic.github.io/touchup/privacyPolicy)
 
 ## License
 
