@@ -3,20 +3,74 @@
     <meta charset="UTF-8" />
     <title>TouchUp privacy policy</title>
     <link rel="stylesheet" href="style.css" />
+    <style>
+      .privacy-policy {
+        display: block;
+        margin: 20 auto;
+        border: 1px solid gray;
+        border-radius: 10px;
+        padding: 30px;
+        text-align: left;
+        width: max-content;
+        max-width: 50%;
+      }
+    </style>
   </head>
   <body>
     <h1>TouchUp privacy policy</h1>
     <a href="./">Home</a>
 
-    <hr />
-    Last updated: 6/8/2024 (DD/MM/YYYY)
-    <br />
-    No information is collected by TouchUp.
-    <br />
-    Information may be collected by third parties with which we link (for
-    example, YouTube). They have their own privacy policies.
-    <br />
-    <br />
-    In case our policies change, we will update this page.
+    <div class="privacy-policy">
+      08/08/2024 (DD/MM/YYYY)<br />
+      Applies to: TouchUp version 0.1.0
+      <h3>Third-party integration</h3>
+      TouchUp does not require authorization for basic usage. However,
+      additional features become available if you choose to log into third-party
+      services.<br />
+      TouchUp stores third-party authorization tokens locally on your device.
+      These tokens and any information you share with TouchUp are only shared
+      with relevant services, and only for relevant functions:
+
+      <ul>
+        <li>
+          If you've logged in to YouTube through TouchUp, your Google token is
+          stored on your device until you log out through the application or
+          manually delete the file.<br />
+          This token is only ever transferred to official Google APIs and is
+          only used whenever you attempt to upload to YouTube, or if you try to
+          log out of YouTube (TouchUp automatically revokes your active token if
+          possible).<br />
+          <a href="https://policies.google.com/privacy"
+            >Google's own privacy policy</a
+          >
+          applies to any data you submit on their websites when logging in, and
+          any information you provide through our YouTube upload feature.
+          <br />
+
+          The YouTube authorization file stored on your device may be deleted
+          manually by clicking "Open data folder" in TouchUp and deleting the
+          <code>yt_tokencache.json</code> file (alternatively
+          <code>yt_tokencache</code>) through your file viewer.<br />
+          Your YouTube authorization information is not saved to file locally if
+          you turn off "Stay logged in to YouTube" in the app's settings.
+        </li>
+      </ul>
+
+      Third party services may collect personal information and may perform
+      tracking. Please read their respective privacy policies.
+
+      <h3>Personal information & tracking</h3>
+      TouchUp does not transmit any information (personal or otherwise) outside
+      of your own device except for <b>Third-party integration</b>. This means
+      that no online tracking is possible unless you use TouchUp's integration
+      with some tracking service.
+
+      <h3>Changes to This Policy</h3>
+      We may update this privacy policy occasionally.<br />
+      Each version of the privacy policy applies specifically to certain
+      versions of TouchUp, which are listed at the top of this version of the
+      privacy policy. Updates will generally only involve changes to this
+      section or the addition of more applicable TouchUp versions.
+    </div>
   </body>
 </html>
