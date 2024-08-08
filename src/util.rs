@@ -24,6 +24,7 @@ use log::{error, trace};
 
 #[cfg(feature = "async")]
 pub use async_util::*;
+use puffin::profile_function;
 
 pub trait RationalExt {
     fn value_f64(self) -> f64;
@@ -245,6 +246,7 @@ pub fn precise_seek(
     stream_idx: usize,
     target_ts: i64,
 ) -> Result<(), ffmpeg_next::Error> {
+    profile_function!();
     trace!("performing precise seek to {target_ts} in stream {stream_idx}");
 
     unsafe {

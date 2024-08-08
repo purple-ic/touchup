@@ -10,6 +10,7 @@ use std::sync::mpsc::Sender;
 use std::{env, panic, thread};
 
 use log::{info, LevelFilter, Log, Metadata, Record};
+use puffin::{profile_function, profile_scope};
 use simple_logger::SimpleLogger;
 use time::OffsetDateTime;
 
@@ -28,6 +29,7 @@ impl Log for Logger {
     }
 
     fn log(&self, record: &Record) {
+        profile_function!();
         if self.enabled(record.metadata()) {
             let level = record.level();
             let target = if !record.target().is_empty() {
@@ -50,6 +52,8 @@ impl Log for Logger {
             let _ = self
                 .sender
                 .send(format!("{level:<5} [{target}{thread}] {args}"));
+
+            profile_scope!("stdout_log");
             self.inner.log(record)
         }
     }

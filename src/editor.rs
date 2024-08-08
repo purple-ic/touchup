@@ -12,6 +12,7 @@ use egui::{
     include_image, Align, Align2, Button, Color32, Context, CursorIcon, FontId, Image, Layout,
     RichText, Sense, Ui, Vec2, Widget, WidgetText,
 };
+use puffin::profile_function;
 
 use crate::editor::EditorExit::ToSelectScreen;
 use crate::export::ExportFollowUp;
@@ -66,6 +67,8 @@ impl Editor {
         task_cmds: &Sender<TaskCommand>,
         current_texture: Option<&TextureId>,
     ) -> Option<EditorExit> {
+        profile_function!();
+
         let mut exit = None;
         if self.player.is_closed() {
             exit = Some(ToSelectScreen)

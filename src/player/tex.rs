@@ -8,6 +8,7 @@ use eframe::{
 };
 use egui::TextureId;
 use log::{debug, info};
+use puffin::{profile_function, profile_scope};
 
 pub type TextureArc = Arc<Mutex<PlayerTexture>>;
 
@@ -70,6 +71,8 @@ pub fn attempt_tex_update(
     texture: &Mutex<PlayerTexture>,
     frame: &mut Frame,
 ) {
+    profile_function!();
+
     let mut tex = match texture.try_lock() {
         Ok(v) => v,
         Err(TryLockError::WouldBlock) => return,
@@ -86,6 +89,7 @@ pub fn attempt_tex_update(
 
         if let Some(current_tex) = current_tex {
             if current_tex.size != tex.size {
+                profile_scope!("texture_resize");
                 debug!("player texture resizing");
 
                 current_tex.size = tex.size;
@@ -94,6 +98,7 @@ pub fn attempt_tex_update(
                 init_texture(current_tex.native, gl, tex.size, &tex.bytes);
                 check_for_gl_error!(gl, "trying to reinitialize texture for new size");
             } else {
+                profile_scope!("texture_update");
                 // println!("updating texture");
                 let gl = frame.gl().unwrap();
                 unsafe {
@@ -120,6 +125,7 @@ pub fn attempt_tex_update(
                 }
             }
         } else {
+            profile_scope!("texture_make");
             info!("creating player texture");
             *current_tex = Some(create_texture(tex.size, &tex.bytes, frame));
         };

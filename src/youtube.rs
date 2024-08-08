@@ -16,6 +16,7 @@ use egui::{
     Layout, OpenUrl, RichText, Sense, TextEdit, TextFormat, TextStyle, Ui, Widget,
 };
 use log::{debug, error};
+use puffin::profile_function;
 use reqwest::header::HeaderValue;
 use reqwest::multipart;
 use serde::{Deserialize, Serialize};
@@ -53,6 +54,8 @@ pub struct YtScreen {
 
 impl YtScreen {
     pub fn draw(&mut self, ui: &mut Ui, tasks: &mut Vec<Task>) -> bool {
+        profile_function!();
+
         let mut finalize = false;
         let mut cancelled = false;
 
@@ -449,6 +452,8 @@ impl YtAuthScreen {
     }
 
     pub fn draw(mut self, ui: &mut Ui, auth: &AuthArc) -> Option<Self> {
+        profile_function!();
+
         let auth_r = auth.read();
         if auth_r.youtube.is_some() {
             return None;

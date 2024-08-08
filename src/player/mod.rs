@@ -14,6 +14,7 @@ use eframe::{egui, Frame};
 use egui::load::Bytes;
 use egui::{CursorIcon, TextureId};
 use ffmpeg::format;
+use puffin::profile_function;
 use rfd::{MessageButtons, MessageDialog, MessageLevel};
 use tex::TextureArc;
 
@@ -158,6 +159,8 @@ impl PlayerUI {
         ui: &mut Ui,
         current_texture: Option<&TextureId>,
     ) {
+        profile_function!();
+
         let ctx = ui.ctx().clone() /* ctx is rc'd */;
 
         if !self.player.is_paused() {

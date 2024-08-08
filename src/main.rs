@@ -13,9 +13,13 @@ use std::thread;
 use eframe::egui::CentralPanel;
 use eframe::{egui, storage_dir, CreationContext, Frame, NativeOptions};
 use egui::epaint::mutex::RwLock;
-use egui::{Color32, Context, ScrollArea, ViewportBuilder, Visuals};
+use egui::{
+    Color32, Context, Id, KeyboardShortcut, Modifiers, ScrollArea, ViewportBuilder, ViewportId,
+    Visuals,
+};
 use log::info;
 use player::tex::{attempt_tex_update, CurrentTex, PlayerTexture, TextureArc};
+use puffin::{profile_function, profile_scope, profile_scope_custom};
 use replace_with::replace_with;
 use rfd::{MessageButtons, MessageLevel};
 
@@ -241,8 +245,20 @@ impl TouchUp {
     }
 }
 
+const PROFILER_HOTKEY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::CTRL, egui::Key::P);
+
 impl eframe::App for TouchUp {
     fn update(&mut self, ctx: &Context, frame: &mut Frame) {
+        profile_function!();
+
+        puffin::GlobalProfiler::lock().new_frame();
+
+        let p = profile_scope_custom!("touchup_update");
+
+        if ctx.input_mut(|i| i.consume_shortcut(&PROFILER_HOTKEY)) {
+            puffin::set_scopes_on(true);
+        }
+
         attempt_tex_update(&mut self.current_tex, &self.texture, frame);
         draw_tasks(ctx, &mut self.tasks.1, &mut self.task_commands);
 
@@ -327,6 +343,16 @@ impl eframe::App for TouchUp {
                 .set_description(message)
                 .set_buttons(MessageButtons::Ok)
                 .show();
+        }
+
+        drop(p);
+
+        if puffin::are_scopes_on() {
+            ctx.show_viewport_immediate(
+                ViewportId::from_hash_of("puffin"),
+                ViewportBuilder::default().with_title("Profiler (Ctrl+P)"),
+                |ctx, _| CentralPanel::default().show(ctx, puffin_egui::profiler_ui),
+            );
         }
     }
 

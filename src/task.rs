@@ -3,6 +3,7 @@ use crate::util::{self, plural};
 use eframe::epaint::Color32;
 use egui::panel::TopBottomSide;
 use egui::{Align, Id, Label, Layout, ProgressBar, RichText, TopBottomPanel, Widget, WidgetText};
+use puffin::{profile_function, profile_scope, profile_scope_custom};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -11,6 +12,8 @@ pub fn draw_tasks(
     tasks: &mut Vec<Task>,
     task_commands: &mut mpsc::Receiver<TaskCommand>,
 ) {
+    profile_scope!("tasks");
+
     // we also consume the task commands here
     for cmd in task_commands.try_iter() {
         // we prefer just searching for tasks from the start (over binary search)
@@ -56,6 +59,7 @@ pub fn draw_tasks(
         ctx,
         !tasks.is_empty(),
         |ui| {
+            profile_scope_custom!("draw_task");
             if tasks.is_empty() {
                 return;
             }

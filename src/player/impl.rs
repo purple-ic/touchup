@@ -29,6 +29,7 @@ use ffmpeg_next::codec::decoder::video::Video as VideoDecoder;
 use ffmpeg_next::software::resampling::context::Context as Resampler;
 use ffmpeg_next::software::scaling::Context as Scaler;
 use log::{debug, warn};
+use puffin::{profile_function, profile_scope, profile_scope_custom};
 use rodio::{OutputStream, Sink, Source};
 use thiserror::Error;
 
@@ -490,7 +491,10 @@ fn next_packet(
     send: &mut mpsc::SyncSender<Packet>,
     input_mutex: &Arc<Mutex<Input>>,
 ) -> Option<Packet> {
+    profile_function!();
+
     let mut fine_ill_do_it_myself = |input: &mut Input| {
+        profile_scope!("find_packet");
         for (packet_stream, packet) in input.packets() {
             if self_stream_check(&packet_stream) {
                 return Some(packet);
@@ -828,6 +832,8 @@ impl VideoManager {
 
     #[must_use]
     fn process_commands(&mut self) -> ControlFlow<Option<PlayerError>> {
+        profile_function!();
+
         while let Ok(command) = self.commands_recv.try_recv() {
             self.process_command(false, command)?;
         }
@@ -836,6 +842,7 @@ impl VideoManager {
 
     fn begin_loop(&mut self) -> Result<(), PlayerError> {
         loop {
+            let profiler = profile_scope_custom!("loop");
             if self.closer.should_close() {
                 let _ = self.process_commands();
                 return Ok(());
@@ -853,6 +860,7 @@ impl VideoManager {
             let next_frame_sec =
                 Duration::from_secs_f64(ts2sec(self.ts_rate, self.frame.pts().unwrap_or(0)));
             let sec_now = self.time.now();
+            drop(profiler); // make sure thread::sleep isn't counted
 
             thread::sleep(min(
                 Duration::from_secs_f32(1. / 60.),
@@ -866,6 +874,7 @@ impl VideoManager {
         let ts_now = self.ts_now();
 
         if ts_now >= frame_pts {
+            profile_scope!("refresh");
             // update the texture (if the frame isn't empty)
             if self.frame_scaled.planes() != 0 {
                 let mut tex = self.texture.lock().unwrap();
@@ -873,6 +882,7 @@ impl VideoManager {
             }
             // decode the next frame for later
             loop {
+                profile_scope!("decode_img");
                 if self.decoder.receive_frame(&mut self.frame).is_ok() {
                     if self.frame.pts().unwrap_or_else(|| todo!()) < self.ts_now() {
                         continue;
@@ -894,8 +904,11 @@ impl VideoManager {
                     self.decoder.send_packet(&packet).unwrap();
                 }
             }
-            // rescale our new frame
-            self.scaler.run(&self.frame, &mut self.frame_scaled)?;
+            {
+                profile_scope!("scale_img");
+                // rescale our new frame
+                self.scaler.run(&self.frame, &mut self.frame_scaled)?;
+            }
         }
 
         Ok(())
@@ -903,6 +916,8 @@ impl VideoManager {
 }
 
 fn update_texture(frame: &VideoFrame, texture: &mut PlayerTexture) {
+    profile_function!();
+
     let size = [frame.width() as usize, frame.height() as usize];
     texture.size = size;
     texture.changed = true;
@@ -1022,6 +1037,7 @@ impl AudioManager {
             if self.stream_idx.is_none() {
                 return Ok(Some(0.));
             }
+            let p_decode = profile_scope_custom!("decode");
             loop {
                 let packet = match self.next_packet() {
                     None => return Ok(Some(0.)),
@@ -1039,8 +1055,10 @@ impl AudioManager {
                     break;
                 }
             }
+            drop(p_decode);
 
             // resample our newly decoded frame
+            profile_scope!("resample");
             self.resampler
                 .as_mut()
                 .expect("since stream_idx is Some(_), resampler must also be Some(_)")
@@ -1070,6 +1088,8 @@ impl Iterator for AudioManager {
     type Item = f32;
 
     fn next(&mut self) -> Option<Self::Item> {
+        profile_function!();
+
         // this is not strictly required since the audio stream will most likely be
         //  dropped by the video thread, stopping the audio thread. but just in case
         //  we'll end our iterator if we have to close

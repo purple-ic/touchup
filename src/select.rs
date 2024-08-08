@@ -7,6 +7,7 @@ use egui::{
     Align, Color32, Context, CursorIcon, FontSelection, Id, Label, Layout, OpenUrl, RichText,
     Sense, TextEdit, TextStyle, TextWrapMode, Widget, WidgetText,
 };
+use puffin::profile_function;
 use rfd::{MessageButtons, MessageDialog, MessageLevel};
 
 use SelectScreenOut::*;
@@ -44,6 +45,8 @@ impl SelectScreen {
 
     #[must_use]
     pub fn draw(&mut self, ui: &mut Ui, frame: &mut Frame, auth: &AuthArc) -> SelectScreenOut {
+        profile_function!();
+
         let try_save_path = |ctx: &Context, frame: &mut Frame, out_path: &mut String| {
             let path = Path::new(out_path);
             match path.try_exists() {
