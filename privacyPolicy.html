@@ -26,6 +26,10 @@
           margin-top: 20px;
         }
       }
+
+      h4 {
+        margin-bottom: 2px;
+      }
     </style>
   </head>
   <body>
@@ -35,7 +39,7 @@
     <div class="privacy-policy" id="v1">
       <h2 style="text-align: center">Privacy policy - version 1</h2>
 
-      08/08/2024 (DD/MM/YYYY)<br />
+      Updated on 14/08/2024, created on 08/08/2024 (DD/MM/YYYY)<br />
       Applies to: TouchUp version 0.1.0
       <h3>Third-party integration</h3>
       TouchUp does not require authorization for basic usage. However,
@@ -45,37 +49,38 @@
       These tokens and any information you share with TouchUp are only shared
       with relevant services, and only for relevant functions:
 
-      <ul>
-        <li>
-          If you've logged in to YouTube through TouchUp, your Google token is
-          stored on your device until you log out through the application or
-          manually delete the file.<br />
-          This token is only ever transferred to official Google APIs and is
-          only used whenever you attempt to upload to YouTube, or if you try to
-          log out of YouTube (TouchUp automatically revokes your active token if
-          possible).<br />
-          <a href="https://policies.google.com/privacy"
-            >Google's own privacy policy</a
-          >
-          applies to any data you submit on their websites when logging in, and
-          any information you provide through our YouTube upload feature.
-          <br />
+      <div
+        style="margin-left: 15; border-left: solid 2px gray; padding-left: 8px"
+      >
+        <h4>YouTube</h4>
+        If you've logged in to YouTube through TouchUp, your Google token is
+        stored on your device until you log out through the application.<br />
+        This token is only transferred to official Google APIs and is only used
+        for uploading to YouTube, or for revoking itself (TouchUp automatically
+        revokes your token when you log out through the application).<br />
+        TouchUp does not access nor collect any Google/YouTube user data, it
+        simply allows you to upload videos.<br />
+        <a href="https://policies.google.com/privacy"
+          >Google's own privacy policy</a
+        >
+        applies to any data you submit on their websites when logging in, and
+        any information you provide through our YouTube upload feature.
+        <br />
 
-          The YouTube authorization file stored on your device may be deleted
-          manually by clicking "Open data folder" in TouchUp and deleting the
-          <code>yt_tokencache.json</code> file (alternatively
-          <code>yt_tokencache</code>) through your file viewer.<br />
-          Your YouTube authorization information is not saved to file locally if
-          you turn off "Stay logged in to YouTube" in the app's settings.
-        </li>
-      </ul>
+        Your YouTube authorization information is not saved to file locally if
+        you turn off "Stay logged in to YouTube" in the app's settings.<br /><br />
 
-      Third party services may collect personal information and may perform
-      tracking. Please read their respective privacy policies.
+        If your token is saved on your device, then it is saved to your device's
+        credential manager (which differs depending on your OS). All requests
+        involving your token are securely encrypted with HTTPS.
+      </div>
 
       <h3>Personal information</h3>
-      TouchUp does not transmit any information (personal or otherwise) outside
-      of your own device except for <b>Third-party integration</b>.
+      TouchUp itself does not collect any information (personal or
+      otherwise).<br />
+      If you make use of any <b>Third-party integration</b>s (such as YouTube),
+      they may collect your information. Please see their respective privacy
+      policies.
 
       <h3>Changes to This Policy</h3>
       We may update this privacy policy occasionally.<br />
@@ -83,6 +88,13 @@
       versions of TouchUp, which are listed at the top of this version of the
       privacy policy. Updates will generally only involve changes to this
       section or the addition of more applicable TouchUp versions.
+
+      <h3>Contact Me</h3>
+      For any questions or concerns, email me at
+      <a href="mailto:purpleic22@gmail.com">purpleic22@gmail.com</a> or ask on
+      <a href="https://github.com/purple-ic/touchup/discussions"
+        >the public discussion board</a
+      >
     </div>
   </body>
 </html>
