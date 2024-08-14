@@ -13,7 +13,7 @@ use rfd::{MessageButtons, MessageDialog, MessageLevel};
 use SelectScreenOut::*;
 
 use crate::util::report_err;
-use crate::{storage, AuthArc};
+use crate::{storage, AuthArc, MessageManager};
 
 const PRIVACY_POLICY_VERSION: &'static str = "1";
 
@@ -46,7 +46,13 @@ impl SelectScreen {
     }
 
     #[must_use]
-    pub fn draw(&mut self, ui: &mut Ui, frame: &mut Frame, auth: &AuthArc) -> SelectScreenOut {
+    pub fn draw(
+        &mut self,
+        msg: &MessageManager,
+        ui: &mut Ui,
+        frame: &mut Frame,
+        auth: &AuthArc,
+    ) -> SelectScreenOut {
         profile_function!();
 
         let try_save_path = |ctx: &Context, frame: &mut Frame, out_path: &mut String| {
@@ -190,7 +196,8 @@ impl SelectScreen {
                                  true);
                     // if the user disabled login saving, delete the token cache
                     if let Some(false) = keep_login_delta {
-                        youtube::yt_delete_token_file()
+                        msg.handle_err_spawn("removing the YouTube token entry", youtube::yt_remove_entry());
+                        ui.ctx().data_mut(|d| d.insert_persisted(Id::new("ytLoggedIn"), false));
                     }
                     let auth_r = auth.read();
                     if auth_r.youtube.is_some() {
@@ -198,7 +205,8 @@ impl SelectScreen {
                             drop(auth_r);
                             let mut auth_w = auth.write();
                             let yt = auth_w.youtube.take().expect("youtube should not have been removed between switching lock from read -> to write");
-                            youtube::yt_log_out(&yt);
+                            youtube::yt_log_out(msg, &yt);
+                            ui.ctx().data_mut(|d| d.insert_persisted(Id::new("ytLoggedIn"), false));
                         }
                     } else if ui.button("Log in to YouTube").clicked() {
                         yt_login = true;

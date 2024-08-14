@@ -2,12 +2,12 @@
 
 use std::backtrace::Backtrace;
 use std::future::Future;
-use std::io::{ErrorKind, SeekFrom};
-use std::path::PathBuf;
+use std::io::SeekFrom;
 use std::pin::Pin;
 use std::sync::mpsc;
-use std::{fs, io, mem};
+use std::{io, mem};
 
+use async_trait::async_trait;
 use eframe::emath::{Align, Vec2};
 use eframe::epaint::text::TextWrapping;
 use egui::text::{LayoutJob, LayoutSection};
@@ -15,6 +15,7 @@ use egui::{
     include_image, Button, Color32, Context, CursorIcon, FontId, Id, Image, ImageSource, Label,
     Layout, OpenUrl, RichText, Sense, TextEdit, TextFormat, TextStyle, Ui, Widget,
 };
+use keyring::Entry;
 use log::{debug, error};
 use puffin::profile_function;
 use reqwest::header::HeaderValue;
@@ -27,11 +28,12 @@ use tokio::sync::oneshot;
 use tokio::task::spawn_blocking;
 use yup_oauth2::authenticator::{Authenticator, DefaultHyperClient, HyperClientBuilder};
 use yup_oauth2::authenticator_delegate::InstalledFlowDelegate;
+use yup_oauth2::storage::{TokenInfo, TokenStorage};
 use yup_oauth2::{ConsoleApplicationSecret, InstalledFlowAuthenticator, InstalledFlowReturnMethod};
 
 use crate::task::Task;
-use crate::util::{AnyExt, CheapClone, Updatable};
-use crate::{header_map, https_client, spawn_async, storage, AuthArc, MessageManager};
+use crate::util::{report_err, CheapClone, Updatable};
+use crate::{header_map, https_client, spawn_async, AuthArc, MessageManager};
 
 pub enum YtInfo {
     Continue {
@@ -294,12 +296,17 @@ pub enum YtAuthErr {
     ReqwestError(#[from] reqwest::Error, Backtrace),
     #[error("Could not authenticate into YouTube: {0}")]
     AuthErr(io::Error),
+    #[error("Could not access credentials: {0}")]
+    KeyRing(#[from] keyring::Error, Backtrace),
+    #[error("JSON error: {0}")]
+    JsonErr(#[from] serde_json::Error, Backtrace),
 }
 
 pub async fn yt_auth(
     ctx: &Context,
     send_url: mpsc::Sender<String>,
     keep_login: bool,
+    msg: MessageManager,
 ) -> Result<YtCtx, YtAuthErr> {
     let secret: ConsoleApplicationSecret =
         serde_json::from_slice(include_bytes!("../embedded/yt_cred.json"))
@@ -317,9 +324,10 @@ pub async fn yt_auth(
         .await?;
     debug!("yt version info: {v_info:?}");
     if v_info.outdated {
-        spawn_blocking(|| {
-            yt_delete_token_file();
-        });
+        match yt_remove_entry().await {
+            Ok(()) => {}
+            Err(e) => report_err("removing the YouTube token entry", &e),
+        }
         return Err(YtAuthErr::Outdated);
     }
 
@@ -337,7 +345,10 @@ pub async fn yt_auth(
             assert!(!need_code);
 
             Box::pin(async move {
-                let _ = self.send_url.send(url.to_string());
+                match self.send_url.send(url.to_string()) {
+                    Ok(()) => {}
+                    Err(mpsc::SendError(_)) => return Err("url send channel is closed".into()),
+                }
                 self.ctx.output_mut(|o| {
                     o.open_url = Some(OpenUrl::new_tab(url));
                 });
@@ -348,23 +359,27 @@ pub async fn yt_auth(
     }
 
     let ctx2 = ctx.clone();
-    let auth = InstalledFlowAuthenticator::builder(
+    let mut auth_b = InstalledFlowAuthenticator::builder(
         secret.installed.unwrap(),
         InstalledFlowReturnMethod::HTTPRedirect,
-    )
-    .maybe_apply(keep_login, |builder| {
-        builder.persist_tokens_to_disk(yt_token_file())
-    })
-    .flow_delegate(Box::new(CodePresenter {
-        ctx: ctx2,
-        send_url,
-    }))
-    .build()
-    .await
-    .map_err(YtAuthErr::AuthErr)?;
+    );
+    if keep_login {
+        auth_b = auth_b.with_storage(Box::new(YtAuthStorage::new(msg).await?))
+    }
+    let auth = auth_b
+        .flow_delegate(Box::new(CodePresenter {
+            ctx: ctx2,
+            send_url,
+        }))
+        .build()
+        .await
+        .map_err(YtAuthErr::AuthErr)?;
 
     // try to cache the token for the upload scope
     let _ = auth.token(&[UPLOAD_SCOPE]).await;
+
+    let ctx = ctx.cheap_clone();
+    spawn_blocking(move || ctx.data_mut(|d| d.insert_persisted(Id::new("ytLoggedIn"), true)));
 
     Ok(YtCtx {
         auth,
@@ -372,23 +387,87 @@ pub async fn yt_auth(
     })
 }
 
-pub fn yt_token_file() -> PathBuf {
-    let mut p = storage();
-    p.push("yt_tokencache.json");
-    p
+// this is not the std (blocking) OnceLock because OnceLock's try methods aren't stabilized (https://github.com/rust-lang/rust/issues/109737)
+// also, it's usually initialized in async code anyway
+static YT_ENTRY: tokio::sync::OnceCell<keyring::Entry> = tokio::sync::OnceCell::const_new();
+
+struct YtAuthStorage {
+    msg: MessageManager,
 }
 
-// note: for logging out, use yt_log_out
-//      yt_log_out also revokes the token
-pub fn yt_delete_token_file() {
-    match fs::remove_file(yt_token_file()) {
-        Ok(_) => {}
-        Err(e) if e.kind() == ErrorKind::NotFound => {}
-        Err(e) => panic!("could not delete youtube token file: {e}"),
+impl YtAuthStorage {
+    async fn new(msg: MessageManager) -> Result<Self, YtAuthErr> {
+        // if the entry can't be initialized then return Err
+        get_or_init_entry().await?;
+        Ok(YtAuthStorage { msg })
     }
 }
 
-pub fn yt_log_out(yt: &YtCtx) {
+async fn get_or_init_entry() -> Result<&'static keyring::Entry, keyring::Error> {
+    YT_ENTRY
+        .get_or_try_init(|| async {
+            spawn_blocking(|| Entry::new("touchup", "main"))
+                .await
+                .expect("Entry::new should not panic")
+        })
+        .await
+}
+
+fn get_entry() -> &'static keyring::Entry {
+    YT_ENTRY
+        .get()
+        .expect("YT_ENTRY must be initialized by this point")
+}
+
+#[async_trait]
+impl TokenStorage for YtAuthStorage {
+    async fn set(&self, scopes: &[&str], token: TokenInfo) -> anyhow::Result<()> {
+        assert_eq!(scopes, &[UPLOAD_SCOPE]);
+        spawn_blocking(move || {
+            let entry = get_entry();
+            let bytes = serde_json::to_vec(&token)?;
+            Ok(entry.set_secret(&bytes)?)
+        })
+        .await
+        .expect("closure shouldnt fail")
+    }
+
+    async fn get(&self, scopes: &[&str]) -> Option<TokenInfo> {
+        assert_eq!(scopes, &[UPLOAD_SCOPE]);
+        let msg = self.msg.cheap_clone();
+        let result = spawn_blocking(move || {
+            let entry = get_entry();
+            msg.handle_err::<YtAuthErr, _>("attempting to fetch YouTube credentials", |_| {
+                match entry.get_secret() {
+                    Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+                    Err(keyring::Error::NoEntry) => Ok(None),
+                    Err(other) => {
+                        msg.report_err("attempting to fetch YouTube credentials", &other);
+                        Err(other.into())
+                    }
+                }
+            })
+            .flatten()
+        })
+        .await
+        .expect("inner closure shouldn't panic");
+        result
+    }
+}
+
+pub async fn yt_remove_entry() -> Result<(), keyring::Error> {
+    let entry = get_or_init_entry().await?;
+    spawn_blocking(|| match entry.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(err) => Err(err),
+    })
+    .await
+    .expect("inner closure should never fail (yt_remove_entry)")?;
+    Ok(())
+}
+
+pub fn yt_log_out(msg: &MessageManager, yt: &YtCtx) {
     // auth is reference-counted
     let auth = yt.auth.clone();
 
@@ -412,7 +491,7 @@ pub fn yt_log_out(yt: &YtCtx) {
             .unwrap();
     });
 
-    yt_delete_token_file();
+    msg.handle_err_spawn("removing YouTube token entry", yt_remove_entry());
 }
 
 pub struct YtAuthScreen {
@@ -430,8 +509,11 @@ impl YtAuthScreen {
             .data_mut(|d| d.get_persisted(Id::new("ytKeepLogin")))
             .unwrap_or(true);
         spawn_async(async move {
-            let auth_future =
-                msg.handle_err_async("logging into YouTube", yt_auth(&ctx, url_send, keep_login));
+            let msg2 = msg.cheap_clone();
+            let auth_future = msg.handle_err_async(
+                "logging into YouTube",
+                yt_auth(&ctx, url_send, keep_login, msg2),
+            );
             tokio::select! {
                 v = auth_future => {
                     if let Some(v) = v {

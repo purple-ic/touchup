@@ -335,6 +335,21 @@ pub trait AnyExt {
             self
         }
     }
+
+    fn try_maybe_apply<E>(
+        self,
+        should_apply: bool,
+        func: impl FnOnce(Self) -> Result<Self, E>,
+    ) -> Result<Self, E>
+    where
+        Self: Sized,
+    {
+        if should_apply {
+            func(self)
+        } else {
+            Ok(self)
+        }
+    }
 }
 
 impl<T> AnyExt for T {}

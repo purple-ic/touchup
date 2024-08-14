@@ -11,12 +11,22 @@ description = "A program to quickly edit video clips"
 
 [dependencies]
 thiserror = "1.0.63"
+# yup_oauth2 uses anyhow in v11.0.0
+# newer versions use thiserror
+anyhow = { version = "1.0.38", optional = true }
 time = { version = "0.3.36", default-features = false, features = ["std"] }
 backtrace = "0.3.73"
 log = "0.4.22"
 simple_logger = { version = "5.0.0", features = ["threads"] }
 puffin = "0.19.1"
 puffin_egui = "0.29.0"
+keyring = { version = "3.0.5", features = [
+  "apple-native",
+  "windows-native",
+  "sync-secret-service",
+], optional = true }
+# yup_oauth2 uses async_trait
+async-trait = { version = "0.1.18", optional = true }
 
 # make sure the egui, eframe and egui_extras versions are the same!
 egui = { version = "0.28.1", features = ["persistence", "serde"] }
@@ -88,6 +98,9 @@ youtube = [
   "reqwest/json",
   "reqwest/multipart",
   "tokio-util/io",
+  "dep:keyring",
+  "dep:anyhow",
+  "dep:async-trait",
 ]
 # enables the async runtime
 #   the async runtime is a single thread separate from the UI thread

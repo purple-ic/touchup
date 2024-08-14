@@ -14,7 +14,8 @@ use eframe::egui::CentralPanel;
 use eframe::{egui, storage_dir, CreationContext, Frame, NativeOptions};
 use egui::epaint::mutex::RwLock;
 use egui::{
-    Color32, Context, KeyboardShortcut, Modifiers, ScrollArea, ViewportBuilder, ViewportId, Visuals,
+    Color32, Context, Id, KeyboardShortcut, Modifiers, ScrollArea, ViewportBuilder, ViewportId,
+    Visuals,
 };
 use log::info;
 use player::tex::{attempt_tex_update, CurrentTex, PlayerTexture, TextureArc};
@@ -216,7 +217,11 @@ impl TouchUp {
         let (task_cmd_sender, task_commands) = mpsc::channel();
         let mut screen = Screen::Select(Self::select_screen(&cc.egui_ctx));
         #[cfg(feature = "youtube")]
-        if youtube::yt_token_file().exists() {
+        if cc
+            .egui_ctx
+            .data_mut(|d| d.get_persisted(Id::new("ytLoggedIn")))
+            .unwrap_or(false)
+        {
             let msg = message_manager.cheap_clone();
             // if the token file exists, attempt to log into youtube right now
             screen = Screen::YouTubeLogin(youtube::YtAuthScreen::new(
@@ -265,32 +270,34 @@ impl eframe::App for TouchUp {
             ScrollArea::vertical().show(ui, |ui| {
                 ui.push_id(self.screen.id(), |ui| {
                     match &mut self.screen {
-                        Screen::Select(select) => match select.draw(ui, frame, &self.auth) {
-                            SelectScreenOut::Stay => {}
-                            SelectScreenOut::Edit(to_open) => {
-                                match Editor::new(
-                                    ctx,
-                                    self.message_manager.cheap_clone(),
-                                    to_open,
-                                    frame,
-                                    Arc::clone(&self.texture),
-                                ) {
-                                    None => {}
-                                    Some(screen) => {
-                                        self.screen = Screen::Edit(screen);
+                        Screen::Select(select) => {
+                            match select.draw(&self.message_manager, ui, frame, &self.auth) {
+                                SelectScreenOut::Stay => {}
+                                SelectScreenOut::Edit(to_open) => {
+                                    match Editor::new(
+                                        ctx,
+                                        self.message_manager.cheap_clone(),
+                                        to_open,
+                                        frame,
+                                        Arc::clone(&self.texture),
+                                    ) {
+                                        None => {}
+                                        Some(screen) => {
+                                            self.screen = Screen::Edit(screen);
+                                        }
                                     }
+                                    ctx.request_repaint();
                                 }
-                                ctx.request_repaint();
+                                #[cfg(feature = "youtube")]
+                                SelectScreenOut::YtLogin => {
+                                    self.screen = Screen::YouTubeLogin(youtube::YtAuthScreen::new(
+                                        ui.ctx().clone(),
+                                        self.auth.clone(),
+                                        self.message_manager.cheap_clone(),
+                                    ))
+                                }
                             }
-                            #[cfg(feature = "youtube")]
-                            SelectScreenOut::YtLogin => {
-                                self.screen = Screen::YouTubeLogin(youtube::YtAuthScreen::new(
-                                    ui.ctx().clone(),
-                                    self.auth.clone(),
-                                    self.message_manager.cheap_clone(),
-                                ))
-                            }
-                        },
+                        }
                         Screen::Edit(player) => {
                             match player.draw(
                                 &mut self.tasks,
@@ -415,8 +422,8 @@ impl MessageManager {
         .unwrap();
     }
 
-    fn _handle_err<E: Error>(&self, stage: &str, err: E) {
-        report_err(stage, &err);
+    pub fn report_err<E: Error>(&self, stage: &str, err: &E) {
+        report_err(stage, err);
         self.show_blocking(format!("An error occurred while {stage}:\n{err}"));
     }
 
@@ -428,7 +435,7 @@ impl MessageManager {
         match func(self) {
             Ok(v) => Some(v),
             Err(err) => {
-                self._handle_err(stage, err);
+                self.report_err(stage, &err);
                 None
             }
         }
@@ -453,7 +460,7 @@ impl MessageManager {
                 let self2 = self.cheap_clone();
                 tokio::task::spawn_blocking(move || {
                     let stage = stage;
-                    self2._handle_err(stage.as_ref(), err);
+                    self2.report_err(stage.as_ref(), &err);
                 })
                 .await
                 .expect("_handle_err should not panic");
