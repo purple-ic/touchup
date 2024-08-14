@@ -38,7 +38,7 @@ jobs:
           echo "---- Rodio dependencies"
           sudo apt-get install -y libasound2-dev
       - name: Install dbus
-        if: ${{ matrix.enable-yt == "enable-yt" }}
+        if: ${{ matrix.enable-yt == 'enable-yt' }}
         run: sudo apt-get install -y libdbus-1-dev
       - name: Check TouchUp compilation
         run: |
