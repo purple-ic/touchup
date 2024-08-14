@@ -13,8 +13,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ ubuntu-latest ] #todo
-        enable-yt: [ enable-yt, disable-yt ]
+        os: [ubuntu-latest] #todo
+        enable-yt: [enable-yt, disable-yt]
         include:
           - enable-yt: enable-yt
             yt: "-F youtube"
@@ -37,6 +37,9 @@ jobs:
           sudo apt-get install -y clang libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev pkg-config
           echo "---- Rodio dependencies"
           sudo apt-get install -y libasound2-dev
+      - name: Install dbus
+        if: ${{ matrix.enable-yt == "enable-yt" }}
+        run: sudo apt-get install -y libdbus-1-dev
       - name: Check TouchUp compilation
         run: |
           cargo check --no-default-features ${{ matrix.yt }}
